@@ -1,0 +1,32 @@
+Name: vintnerpc
+Version: 0.1
+License: PublicDomain
+Build-Type: Simple
+Homepage: https://github.com/agentm/vintnerpc
+Bug-Reports: https://github.com/agentm/vintnerpc
+Author: AgentM
+Stability: experimental
+Category: RPC
+Maintainer: agentm@themactionfaction.com
+Cabal-Version: >= 1.10
+Synopsis: Fast, Haskell RPC
+Description: Haskell-to-Haskell RPC using Winery serialization.
+Extra-Source-Files: Changelog.markdown README.markdown
+
+Source-Repository head
+    Type: git
+    location: https://github.com/agentm/vintnerpc
+
+Library
+        Build-Depends: base >= 4.8
+                     , winery
+                     , bytestring
+                     , streamly >= 0.7.2
+                     , network
+                     , exceptions
+                     , async
+        Hs-Source-Dirs: ./src
+        Exposed-Modules:
+                        Network.RPC.Vintner.Server
+                        Network.RPC.Vintner.Client
+                         
