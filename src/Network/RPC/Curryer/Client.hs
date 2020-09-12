@@ -1,4 +1,4 @@
-module Network.RPC.Vintner.Client where
+module Network.RPC.Curryer.Client where
 import Streamly.Prelude
 import Network.RPC.Vintner.Server
 import Streamly.Network.Socket

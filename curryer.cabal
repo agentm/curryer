@@ -1,9 +1,9 @@
-Name: vintnerpc
+Name: curryer
 Version: 0.1
 License: PublicDomain
 Build-Type: Simple
-Homepage: https://github.com/agentm/vintnerpc
-Bug-Reports: https://github.com/agentm/vintnerpc
+Homepage: https://github.com/agentm/curryer
+Bug-Reports: https://github.com/agentm/curryer
 Author: AgentM
 Stability: experimental
 Category: RPC
@@ -15,7 +15,7 @@ Extra-Source-Files: Changelog.markdown README.markdown
 
 Source-Repository head
     Type: git
-    location: https://github.com/agentm/vintnerpc
+    location: https://github.com/agentm/curryer
 
 Library
         Build-Depends: base >= 4.8
@@ -27,6 +27,6 @@ Library
                      , async
         Hs-Source-Dirs: ./src
         Exposed-Modules:
-                        Network.RPC.Vintner.Server
-                        Network.RPC.Vintner.Client
+                        Network.RPC.Curryer.Server
+                        Network.RPC.Curryer.Client
                          

@@ -1,5 +1,5 @@
 {-# LANGUAGE StandaloneDeriving, DerivingVia, DeriveGeneric, RankNTypes, TypeApplications, ScopedTypeVariables, MultiParamTypeClasses #-}
-module Network.RPC.Vintner.Server where
+module Network.RPC.Curryer.Server where
 import Streamly
 import qualified Streamly.Prelude as S
 import qualified Streamly.Network.Inet.TCP as TCP
