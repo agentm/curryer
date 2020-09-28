@@ -1,5 +1,5 @@
 {-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving #-}
-{-# HLINT ignore "Use lambda-case" #-}
+{- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
 import Streamly
 import qualified Streamly.Prelude as S
@@ -24,6 +24,7 @@ import Data.Foldable
 import Data.Bits
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
+import qualified Data.UUID.V4 as UUIDBase
 import qualified Streamly.Internal.Data.Array.Storable.Foreign.Types as SA
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 import Control.Monad
@@ -52,7 +53,7 @@ data ServerHelloMessage = ServerHelloMessage { serverServices :: [String],
 --server-to-client and client-to-server async request (no response requested)
 
 data Message a = Response UUID a
-                | AsyncRequest a
+                | AsyncRequest UUID a
                 | ResponseExpectedRequest UUID a
                 -- | Services                
                 | ExceptionResponse String
@@ -134,7 +135,7 @@ serve connhandler msghandler hostaddr port mSockLock = do
                     HandlerResponse responseVal -> sendMessage (Response requestID responseVal) sock
                     NoResponse -> error "attempt to return non-response to expected response message"
                     HandlerException _ -> error "TODO HandlerException"
-                AsyncRequest val -> do
+                AsyncRequest _ val -> do
                   putStrLn "AsyncReq"
                   void $ msghandler val
                   --no response necessaryxs
@@ -143,7 +144,9 @@ serve connhandler msghandler hostaddr port mSockLock = do
         mResp <- connhandler
         case mResp of
           Nothing -> pure ()
-          Just resp -> sendMessage (AsyncRequest resp) sock
+          Just resp -> do
+            requestID <- UUID <$> UUIDBase.nextRandom            
+            sendMessage (AsyncRequest requestID resp) sock
         drainSocketMessages sock messageHandler
   serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & parallely . S.mapM (handleWithM handleSock) & S.drain
   pure True

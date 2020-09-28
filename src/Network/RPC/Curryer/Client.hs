@@ -45,7 +45,7 @@ clientAsync sock syncmap asyncHandler = do
             case mMVar of
               Nothing -> error "dumped unrequested response"
               Just mVar -> putMVar mVar val
-          AsyncRequest asyncMsg ->
+          AsyncRequest _ asyncMsg ->
             asyncHandler asyncMsg
           ResponseExpectedRequest _ _ -> error "dumped response expected request"
           ExceptionResponse _ -> error "TODO Exception"
@@ -62,4 +62,10 @@ call (Connection sock _ mVarMap) msg = do
   response <- takeMVar responseMVar
   atomically $ STMMap.delete requestID mVarMap
   pure (Right response)
+
+asyncCall :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError ())
+asyncCall (Connection sock _ _) msg = do
+  requestID <- UUID <$> UUIDBase.nextRandom
+  sendMessage (AsyncRequest requestID msg) sock
+  pure (Right ())
   

@@ -12,49 +12,55 @@ import Network.RPC.Curryer.Server
 import Network.RPC.Curryer.Client
 
 testTree :: TestTree
-testTree = testGroup "basic" [--testCase "simple" testSimpleCall,
-                              testCase "client async" testAsyncServerCall
+testTree = testGroup "basic" [testCase "simple" testSimpleCall,
+                              testCase "client async" testAsyncServerCall,
+                              testCase "server async" testAsyncClientCall
                              ]
 
 --client-to-server request
 data TestRequest = AddTwoNumbersReq Int Int
+                 | TestAsyncReq String
+                 | TestCallMeBackReq String
   deriving (Generic, Show)
   deriving Serialise via WineryVariant TestRequest
 
 --server responds to client
 data TestResponse = AddTwoNumbersResp Int
                   | AsyncHello String
+                  | TestCallMeBackResp String
   deriving (Generic, Show, Eq)
   deriving Serialise via WineryVariant TestResponse
 
-testServerMessageHandler :: TestRequest -> IO (HandlerResponse TestResponse)
-testServerMessageHandler msg = do
+testServerMessageHandler :: Maybe (MVar String) -> TestRequest -> IO (HandlerResponse TestResponse)
+testServerMessageHandler mAsyncMVar msg = do
   --print msg        
   case msg of
+      --round-trip request to add two Ints
       AddTwoNumbersReq x y -> pure (HandlerResponse (AddTwoNumbersResp (x+y)))
+      --respond to a request for an async callback
+      TestCallMeBackReq s -> do
+        case mAsyncMVar of
+          Nothing -> pure ()
+          Just mvar -> putMVar mvar s
+        pure NoResponse
       
 -- test a simple client-to-server round-trip function execution
 testSimpleCall :: Assertion
 testSimpleCall = do
   readyVar <- newEmptyMVar
         
-  server <- async (serve (pure Nothing) testServerMessageHandler localHostAddr 0 (Just readyVar))
+  server <- async (serve (pure Nothing) (testServerMessageHandler Nothing) localHostAddr 0 (Just readyVar))
   --wait for server to be ready
---  putStrLn "waiting for server"
-  sock@(SockAddrInet port _) <- takeMVar readyVar
---  putStrLn $ "server ready: " ++ show sock
+  (SockAddrInet port _) <- takeMVar readyVar
   let clientHandler :: AsyncMessageHandler TestResponse
       clientHandler _ = error "async handler called"
       mkConn :: IO (Connection TestResponse)
       mkConn = connect clientHandler localHostAddr port
   conn <- mkConn
---  putStrLn "connect complete"
   let c :: IO (Either ConnectionError TestResponse)
       c = call conn (AddTwoNumbersReq 1 1)
   x <- c 
---  putStrLn "call complete"
   assertEqual "server request+response" (Right (AddTwoNumbersResp 2)) x
---  print x
   close conn
 
 --test that the client can proces a server-initiated asynchronous callback from the server
@@ -67,7 +73,7 @@ testAsyncServerCall = do
       testServerNewConnHandler = do
         pure (Just (AsyncHello "welcome"))
         
-  server <- async (serve testServerNewConnHandler testServerMessageHandler localHostAddr 0 (Just portReadyVar))
+  server <- async (serve testServerNewConnHandler (testServerMessageHandler Nothing) localHostAddr 0 (Just portReadyVar))
   (SockAddrInet port _) <- takeMVar portReadyVar
   let clientHandler :: AsyncMessageHandler TestResponse
       clientHandler msg = do
@@ -80,5 +86,17 @@ testAsyncServerCall = do
   close conn
 
 --test that the client can make a non-blocking call
---testAsyncClientCall :: Assertion
-
+testAsyncClientCall :: Assertion
+testAsyncClientCall = do
+  portReadyVar <- newEmptyMVar
+  receivedAsyncMessageVar <- newEmptyMVar
+  
+  server <- async (serve (pure Nothing) (testServerMessageHandler (Just receivedAsyncMessageVar)) localHostAddr 0 (Just portReadyVar))
+  (SockAddrInet port _) <- takeMVar portReadyVar
+  
+  conn <- connect @TestResponse (\_ -> pure ()) localHostAddr port
+  --send an async message, wait for an async response to confirm receipt
+  Right () <- asyncCall conn (TestCallMeBackReq "hi server")
+  asyncMessage <- takeMVar receivedAsyncMessageVar
+  assertEqual "async message" "hi server" asyncMessage  
+  close conn
