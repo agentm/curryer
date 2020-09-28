@@ -25,8 +25,31 @@ Library
                      , network
                      , exceptions
                      , async
+                     , uuid
+                     , fast-builder
+                     , binary
+                     , containers
+                     , stm-containers
+                     , hashable
         Hs-Source-Dirs: ./src
+        Default-Language: Haskell2010
+        ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports        
         Exposed-Modules:
                         Network.RPC.Curryer.Server
                         Network.RPC.Curryer.Client
-                         
+                        Network.RPC.Curryer.StreamlyAdditions
+
+Test-Suite test
+  type: exitcode-stdio-1.0
+  main-is: Driver.hs
+  hs-source-dirs: test
+  default-language: Haskell2010
+  ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports
+  build-depends: tasty
+               , tasty-hunit
+               , base
+               , curryer
+               , winery
+               , network
+               , async
+  other-modules: Curryer.Test.Basic
