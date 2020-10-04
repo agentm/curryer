@@ -38,11 +38,14 @@ clientAsync :: Serialise b =>
 clientAsync sock syncmap asyncHandler = do
   -- ping proper thread to continue
   let responseHandler responseMsg = do
-        putStrLn "clientAsync handler"
+        putStrLn "client-side message handler"
         case responseMsg of
           Response requestId val -> do
-            mMVar <- atomically $ STMMap.lookup requestId syncmap
-            case mMVar of
+            varval <- atomically $ do
+              v <- STMMap.lookup requestId syncmap
+              STMMap.delete requestId syncmap
+              pure v
+            case varval of
               Nothing -> error "dumped unrequested response"
               Just mVar -> putMVar mVar val
           AsyncRequest _ asyncMsg ->

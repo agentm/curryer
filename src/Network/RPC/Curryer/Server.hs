@@ -6,6 +6,7 @@ import qualified Streamly.Prelude as S
 import Streamly.Network.Socket
 import Streamly.Internal.Network.Socket (handleWithM, writeChunk)
 import Network.Socket as Socket
+import Network.Socket.ByteString as Socket
 import Streamly.Internal.Data.Parser.ParserD as PD
 import Codec.Winery
 import Codec.Winery.Internal (varInt, decodeVarInt, getBytes)
@@ -100,14 +101,14 @@ localHostAddr = (127,0,0,1)
 -- Each message is length-prefixed by a 32-bit unsigned length.
 messageBoundaryP :: Parser IO Word8 BS.ByteString
 messageBoundaryP = do
-  --traceShowM "message!"
-  w4x8 <- PD.take 4 FL.toList
-  --traceShowM ("w4x8",w4x8)
+  let x = FL.toList
+  w4x8 <- PD.take 4 x
+  traceShowM ("w4x8", w4x8)
   let c = fromIntegral (fromOctets w4x8)
-  --traceShowM ("c", c)
-  vals <- PD.take c FL.toList
+  traceShowM ("c", c)
+  vals <- PD.take c x
   let bytes = BS.pack vals
-  traceShowM ("vals", BS.length bytes, bytes)
+  traceShowM ("parsedBytes", c, BS.length bytes, bytes)
   pure bytes
 
 type NewConnectionHandler msg = IO (Maybe msg)
@@ -129,7 +130,7 @@ serve connhandler msghandler hostaddr port mSockLock = do
               case msg of
                 Response{} -> putStrLn "client sent response"
                 ResponseExpectedRequest requestID val -> do
-                  putStrLn "ResponseExp"
+                  putStrLn "server received ResponseExpectedRequest"
                   resp <- msghandler val
                   case resp of
                     HandlerResponse responseVal -> sendMessage (Response requestID responseVal) sock
@@ -148,7 +149,7 @@ serve connhandler msghandler hostaddr port mSockLock = do
             requestID <- UUID <$> UUIDBase.nextRandom            
             sendMessage (AsyncRequest requestID resp) sock
         drainSocketMessages sock messageHandler
-  serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & parallely . S.mapM (handleWithM handleSock) & S.drain
+  serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & serially . S.mapM (handleWithM handleSock) & S.drain
   pure True
 
 --add callback to allow for responses via socket
@@ -160,14 +161,12 @@ drainSocketMessages :: Serialise msg => Socket -> MessageHandler msg -> IO ()
 drainSocketMessages sock msgHandler = do
   let sockStream = S.unfold readWithBufferOf (1024 * 4, sock)
       handler bs = do
-        --print ("drain handler", bs)
         case deserialise bs of
           Left err ->
             print err
-          Right val -> do
-            --putStrLn "deserialized value for msgHandler"
+          Right val -> 
             msgHandler val --add response function
-  S.drain $ S.parseManyD messageBoundaryP sockStream & S.mapM handler
+  S.drain $ serially $ S.parseManyD messageBoundaryP sockStream & S.mapM handler
 
 fromOctets :: [Word8] -> Word32
 fromOctets = foldl' accum 0
@@ -185,12 +184,18 @@ octets w =
 --send length-tagged bytestring, perhaps should be in network byte order?
 sendMessage :: Serialise a => a -> Socket -> IO ()
 sendMessage msg socket' = do
-  putStrLn ("sending bytes: " ++ show (blen <> bytes))
-  writeChunk socket' (toArrayS (blen <> bytes))
-  where
-    bytes = serialise msg
-    len = BS.length bytes
-    blen = BS.pack (octets (fromIntegral len))
+  let byteArray = toArraySlow fullbytes
+      dbgByteString = BS.pack (SA.toList byteArray)
+      msgbytes = serialise msg
+      fullbytes = lenbytes <> msgbytes
+      len = BS.length msgbytes
+      lenbytes = BS.pack (octets (fromIntegral len))
+  --when (dbgByteString /= msgbytes) (error "mismatch!")
+  
+  byteCount <- Socket.send socket' fullbytes
+  when (byteCount /= BS.length fullbytes) (error "bytes sent mismatch")  
+  traceShowM ("sent bytes:", byteCount, fullbytes)
+
 
 
 --from streamly-bytestring
@@ -206,3 +211,7 @@ toArrayS (BSI.PS fp off len) = SA.Array nfp endPtr
     nfp = fp `plusForeignPtr` off
     endPtr = unsafeForeignPtrToPtr nfp `plusPtr` len `plusPtr` 1 -- ? why +1?
 
+toArraySlow :: BS.ByteString -> SA.Array Word8
+toArraySlow bs = traceShow ("arr", SA.length arr) arr
+  where
+    arr = SA.fromList (BS.unpack bs)
