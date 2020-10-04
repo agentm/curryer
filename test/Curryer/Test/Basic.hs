@@ -7,6 +7,7 @@ import GHC.Generics
 import Control.Concurrent.MVar
 import Network.Socket (SockAddr(..))
 import Control.Concurrent.Async
+import Control.Monad
 
 import Network.RPC.Curryer.Server
 import Network.RPC.Curryer.Client
@@ -43,6 +44,7 @@ testServerMessageHandler mAsyncMVar msg = do
           Nothing -> pure ()
           Just mvar -> putMVar mvar s
         pure NoResponse
+      TestAsyncReq _ -> pure NoResponse
       
 -- test a simple client-to-server round-trip function execution
 testSimpleCall :: Assertion
@@ -59,9 +61,11 @@ testSimpleCall = do
   conn <- mkConn
   let c :: IO (Either ConnectionError TestResponse)
       c = call conn (AddTwoNumbersReq 1 1)
-  x <- c 
-  assertEqual "server request+response" (Right (AddTwoNumbersResp 2)) x
+  replicateM_ 5 $ do --make five AddTwo calls to shake out parallelism bugs
+    x <- c 
+    assertEqual "server request+response" (Right (AddTwoNumbersResp 2)) x
   close conn
+  cancel server
 
 --test that the client can proces a server-initiated asynchronous callback from the server
 testAsyncServerCall :: Assertion
@@ -84,6 +88,7 @@ testAsyncServerCall = do
   asyncMessage <- takeMVar receivedAsyncMessageVar
   assertEqual "async message" "welcome" asyncMessage
   close conn
+  cancel server
 
 --test that the client can make a non-blocking call
 testAsyncClientCall :: Assertion
@@ -100,3 +105,4 @@ testAsyncClientCall = do
   asyncMessage <- takeMVar receivedAsyncMessageVar
   assertEqual "async message" "hi server" asyncMessage  
   close conn
+  cancel server
