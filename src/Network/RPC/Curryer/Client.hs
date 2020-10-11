@@ -8,8 +8,10 @@ import qualified Data.UUID.V4 as UUIDBase
 import qualified StmContainers.Map as STMMap
 import Control.Concurrent.MVar
 import GHC.Conc
+import Data.Time.Clock
+import System.Timeout
 
-type SyncMap a = STMMap.Map UUID (MVar a)
+type SyncMap a = STMMap.Map UUID (MVar a, UTCTime)
 -- the request map holds
 data Connection a = Connection Socket (Async ()) (SyncMap a)
 
@@ -42,29 +44,41 @@ clientAsync sock syncmap asyncHandler = do
         case responseMsg of
           Response requestId val -> do
             varval <- atomically $ do
-              v <- STMMap.lookup requestId syncmap
+              val' <- STMMap.lookup requestId syncmap
               STMMap.delete requestId syncmap
-              pure v
+              pure val'
             case varval of
               Nothing -> error "dumped unrequested response"
-              Just mVar -> putMVar mVar val
+              Just (mVar,_) -> putMVar mVar val
           AsyncRequest _ asyncMsg ->
             asyncHandler asyncMsg
           ResponseExpectedRequest _ _ -> error "dumped response expected request"
           ExceptionResponse _ -> error "TODO Exception"
   drainSocketMessages sock responseHandler
 
--- | Send a request to the remote server and returns a response.
 call :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError response)
-call (Connection sock _ mVarMap) msg = do
+call = callTimeout Nothing
+
+-- | Send a request to the remote server and returns a response.
+callTimeout :: (Serialise request, Serialise response) => Maybe Int -> Connection response -> request -> IO (Either ConnectionError response)
+callTimeout mTimeout (Connection sock _ mVarMap) msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
   -- setup mvar to wait for response
   responseMVar <- newEmptyMVar
-  atomically $ STMMap.insert responseMVar requestID mVarMap
+  now <- getCurrentTime
+  atomically $ STMMap.insert (responseMVar, now) requestID mVarMap
   sendMessage (ResponseExpectedRequest requestID msg) sock
-  response <- takeMVar responseMVar
+  let timeoutMicroseconds =
+        case mTimeout of
+          Just timeout' -> timeout'
+          Nothing -> -1
+  mResponse <- timeout timeoutMicroseconds (takeMVar responseMVar)
   atomically $ STMMap.delete requestID mVarMap
-  pure (Right response)
+  case mResponse of
+    --timeout
+    Nothing -> do
+      pure (Left TimeoutError)
+    Just response -> pure (Right response)
 
 asyncCall :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError ())
 asyncCall (Connection sock _ _) msg = do

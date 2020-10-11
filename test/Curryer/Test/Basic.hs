@@ -8,6 +8,7 @@ import Control.Concurrent.MVar
 import Network.Socket (SockAddr(..))
 import Control.Concurrent.Async
 import Control.Monad
+import Control.Concurrent
 
 import Network.RPC.Curryer.Server
 import Network.RPC.Curryer.Client
@@ -15,13 +16,15 @@ import Network.RPC.Curryer.Client
 testTree :: TestTree
 testTree = testGroup "basic" [testCase "simple" testSimpleCall,
                               testCase "client async" testAsyncServerCall,
-                              testCase "server async" testAsyncClientCall
+                              testCase "server async" testAsyncClientCall,
+                              testCase "client sync timeout" testSyncClientCallTimeout
                              ]
 
 --client-to-server request
 data TestRequest = AddTwoNumbersReq Int Int
                  | TestAsyncReq String
                  | TestCallMeBackReq String
+                 | DelayMicrosecondsReq Int
   deriving (Generic, Show)
   deriving Serialise via WineryVariant TestRequest
 
@@ -29,6 +32,7 @@ data TestRequest = AddTwoNumbersReq Int Int
 data TestResponse = AddTwoNumbersResp Int
                   | AsyncHello String
                   | TestCallMeBackResp String
+                  | DelayMicrosecondsResp
   deriving (Generic, Show, Eq)
   deriving Serialise via WineryVariant TestResponse
 
@@ -45,6 +49,9 @@ testServerMessageHandler mAsyncMVar msg = do
           Just mvar -> putMVar mvar s
         pure NoResponse
       TestAsyncReq _ -> pure NoResponse
+      DelayMicrosecondsReq ms -> do
+        threadDelay ms
+        pure (HandlerResponse DelayMicrosecondsResp)
       
 -- test a simple client-to-server round-trip function execution
 testSimpleCall :: Assertion
@@ -106,3 +113,23 @@ testAsyncClientCall = do
   assertEqual "async message" "hi server" asyncMessage  
   close conn
   cancel server
+
+testSyncClientCallTimeout :: Assertion
+testSyncClientCallTimeout = do
+  readyVar <- newEmptyMVar
+        
+  server <- async (serve (pure Nothing) (testServerMessageHandler Nothing) localHostAddr 0 (Just readyVar))
+  --wait for server to be ready
+  (SockAddrInet port _) <- takeMVar readyVar
+  let clientHandler :: AsyncMessageHandler TestResponse
+      clientHandler _ = error "async handler called"
+      mkConn :: IO (Connection TestResponse)
+      mkConn = connect clientHandler localHostAddr port
+  conn <- mkConn
+  let c :: IO (Either ConnectionError TestResponse)
+      c = callTimeout (Just 1000) conn (DelayMicrosecondsReq 500)
+  x <- c
+  assertEqual "client sync timeout" (Left TimeoutError) x
+  close conn
+  cancel server
+  
