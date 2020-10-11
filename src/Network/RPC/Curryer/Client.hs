@@ -11,7 +11,7 @@ import GHC.Conc
 import Data.Time.Clock
 import System.Timeout
 
-type SyncMap a = STMMap.Map UUID (MVar a, UTCTime)
+type SyncMap a = STMMap.Map UUID (MVar (Either ConnectionError a), UTCTime)
 -- the request map holds
 data Connection a = Connection Socket (Async ()) (SyncMap a)
 
@@ -39,21 +39,30 @@ clientAsync :: Serialise b =>
   IO ()
 clientAsync sock syncmap asyncHandler = do
   -- ping proper thread to continue
+  let findRequest requestId =
+        atomically $ do
+          val' <- STMMap.lookup requestId syncmap
+          STMMap.delete requestId syncmap
+          pure val'        
+  
   let responseHandler responseMsg = do
         putStrLn "client-side message handler"
         case responseMsg of
           Response requestId val -> do
-            varval <- atomically $ do
-              val' <- STMMap.lookup requestId syncmap
-              STMMap.delete requestId syncmap
-              pure val'
+            varval <- findRequest requestId
             case varval of
               Nothing -> error "dumped unrequested response"
-              Just (mVar,_) -> putMVar mVar val
+              Just (mVar,_) -> putMVar mVar (Right val)
           AsyncRequest _ asyncMsg ->
             asyncHandler asyncMsg
-          ResponseExpectedRequest _ _ -> error "dumped response expected request"
+          ResponseExpectedRequest{} -> error "dumped response expected request"
           ExceptionResponse _ -> error "TODO Exception"
+          TimedOutResponse requestId -> do
+            varval <- findRequest requestId
+            case varval of
+              Nothing -> error "dumped unrequested timeout response"
+              Just (mVar,_) -> putMVar mVar (Left TimeoutError)
+            
   drainSocketMessages sock responseHandler
 
 call :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError response)
@@ -67,18 +76,18 @@ callTimeout mTimeout (Connection sock _ mVarMap) msg = do
   responseMVar <- newEmptyMVar
   now <- getCurrentTime
   atomically $ STMMap.insert (responseMVar, now) requestID mVarMap
-  sendMessage (ResponseExpectedRequest requestID msg) sock
+  sendMessage (ResponseExpectedRequest requestID mTimeout msg) sock
   let timeoutMicroseconds =
         case mTimeout of
-          Just timeout' -> timeout'
+          Just timeout' -> timeout' + 100 --add 100 ms to account for unknown network latency
           Nothing -> -1
   mResponse <- timeout timeoutMicroseconds (takeMVar responseMVar)
   atomically $ STMMap.delete requestID mVarMap
   case mResponse of
     --timeout
-    Nothing -> do
+    Nothing ->
       pure (Left TimeoutError)
-    Just response -> pure (Right response)
+    Just res -> pure res
 
 asyncCall :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError ())
 asyncCall (Connection sock _ _) msg = do

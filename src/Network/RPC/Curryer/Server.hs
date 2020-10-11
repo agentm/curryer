@@ -1,10 +1,10 @@
-{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, TypeApplications #-}
 {- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
 import Streamly
 import qualified Streamly.Prelude as S
 import Streamly.Network.Socket
-import Streamly.Internal.Network.Socket (handleWithM, writeChunk)
+import Streamly.Internal.Network.Socket (handleWithM)
 import Network.Socket as Socket
 import Network.Socket.ByteString as Socket
 import Streamly.Internal.Data.Parser.ParserD as PD
@@ -30,6 +30,7 @@ import qualified Streamly.Internal.Data.Array.Storable.Foreign.Types as SA
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 import Control.Monad
 import Data.Hashable
+import System.Timeout
 
 -- for toArrayS conversion
 import qualified Data.ByteString.Internal as BSI
@@ -53,9 +54,12 @@ data ServerHelloMessage = ServerHelloMessage { serverServices :: [String],
 --client-side timeout
 --server-to-client and client-to-server async request (no response requested)
 
+type Timeout = Int
+
 data Message a = Response UUID a
                 | AsyncRequest UUID a
-                | ResponseExpectedRequest UUID a
+                | ResponseExpectedRequest UUID (Maybe Timeout) a
+                | TimedOutResponse UUID
                 -- | Services                
                 | ExceptionResponse String
                 deriving (Generic, Show)
@@ -103,12 +107,12 @@ messageBoundaryP :: Parser IO Word8 BS.ByteString
 messageBoundaryP = do
   let x = FL.toList
   w4x8 <- PD.take 4 x
-  traceShowM ("w4x8", w4x8)
+  traceShowM ("w4x8"::String, w4x8)
   let c = fromIntegral (fromOctets w4x8)
-  traceShowM ("c", c)
+  traceShowM ("c"::String, c)
   vals <- PD.take c x
   let bytes = BS.pack vals
-  traceShowM ("parsedBytes", c, BS.length bytes, bytes)
+  traceShowM ("parsedBytes"::String, c, BS.length bytes, bytes)
   pure bytes
 
 type NewConnectionHandler msg = IO (Maybe msg)
@@ -122,25 +126,9 @@ serve :: (Show msg, Serialise msg, Serialise resp) =>
          PortNumber ->
          Maybe (MVar SockAddr) ->
          IO Bool
-serve connhandler msghandler hostaddr port mSockLock = do
+serve connhandler userMsgHandler hostaddr port mSockLock = do
   let handleSock sock = do
         putStrLn "handleSock"
-        let messageHandler msg = do
-              putStrLn $ "GOT MSG " ++ show msg
-              case msg of
-                Response{} -> putStrLn "client sent response"
-                ResponseExpectedRequest requestID val -> do
-                  putStrLn "server received ResponseExpectedRequest"
-                  resp <- msghandler val
-                  case resp of
-                    HandlerResponse responseVal -> sendMessage (Response requestID responseVal) sock
-                    NoResponse -> error "attempt to return non-response to expected response message"
-                    HandlerException _ -> error "TODO HandlerException"
-                AsyncRequest _ val -> do
-                  putStrLn "AsyncReq"
-                  void $ msghandler val
-                  --no response necessaryxs
-                ExceptionResponse{} -> putStrLn "client sent exception response"
         -- allow the server to send an async welcome message to the new client, if necessary
         mResp <- connhandler
         case mResp of
@@ -148,14 +136,47 @@ serve connhandler msghandler hostaddr port mSockLock = do
           Just resp -> do
             requestID <- UUID <$> UUIDBase.nextRandom            
             sendMessage (AsyncRequest requestID resp) sock
-        drainSocketMessages sock messageHandler
+        drainSocketMessages sock (serverMessageHandler sock userMsgHandler)
   serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & serially . S.mapM (handleWithM handleSock) & S.drain
   pure True
+
+serverMessageHandler :: forall req resp. (Show req,
+                          Serialise req,
+                          Serialise resp)
+                     => Socket
+                     -> NewMessageHandler req resp
+                     -> Message req
+                     -> IO ()
+serverMessageHandler sock requestMessageHandler msg = do
+  putStrLn $ "GOT MSG " ++ show msg
+  let --runTimeout :: IO (HandlerResponse resp) -> IO (Maybe (HandlerResponse resp))
+      runTimeout mTimeout m = case mTimeout of
+                       Nothing -> Just <$> m
+                       Just timeoutMicroseconds -> timeout timeoutMicroseconds m
+  case msg of
+      Response{} -> putStrLn "client sent response"
+      ResponseExpectedRequest requestID mTimeout val -> do
+        putStrLn "server received ResponseExpectedRequest"
+        resp <- runTimeout mTimeout (requestMessageHandler val)
+        case resp of
+          Just (HandlerResponse responseVal) -> sendMessage (Response requestID responseVal) sock
+          Just NoResponse -> error "attempt to return non-response to expected response message"
+          Just (HandlerException _) -> error "TODO HandlerException"
+          Nothing ->
+            sendMessage (TimedOutResponse @(Message resp) requestID) sock 
+      AsyncRequest _ val -> do
+        putStrLn "AsyncReq"
+        void $ requestMessageHandler val
+        --no response necessary
+      ExceptionResponse{} -> putStrLn "client sent exception response"
+      TimedOutResponse{} -> putStrLn "client sent timed out response"
 
 --add callback to allow for responses via socket
 type MessageHandler a = Message a -> IO ()
 
 type AsyncMessageHandler a = a -> IO ()
+
+
 
 drainSocketMessages :: Serialise msg => Socket -> MessageHandler msg -> IO ()
 drainSocketMessages sock msgHandler = do
@@ -182,10 +203,10 @@ octets w =
     ]
 
 --send length-tagged bytestring, perhaps should be in network byte order?
-sendMessage :: Serialise a => a -> Socket -> IO ()
+sendMessage :: Serialise a => Message a -> Socket -> IO ()
 sendMessage msg socket' = do
-  let byteArray = toArraySlow fullbytes
-      dbgByteString = BS.pack (SA.toList byteArray)
+  let -- byteArray = toArraySlow fullbytes
+      --dbgByteString = BS.pack (SA.toList byteArray)
       msgbytes = serialise msg
       fullbytes = lenbytes <> msgbytes
       len = BS.length msgbytes
@@ -194,7 +215,7 @@ sendMessage msg socket' = do
   
   byteCount <- Socket.send socket' fullbytes
   when (byteCount /= BS.length fullbytes) (error "bytes sent mismatch")  
-  traceShowM ("sent bytes:", byteCount, fullbytes)
+  traceShowM ("sent bytes:" :: String, byteCount, fullbytes)
 
 
 
@@ -212,6 +233,6 @@ toArrayS (BSI.PS fp off len) = SA.Array nfp endPtr
     endPtr = unsafeForeignPtrToPtr nfp `plusPtr` len `plusPtr` 1 -- ? why +1?
 
 toArraySlow :: BS.ByteString -> SA.Array Word8
-toArraySlow bs = traceShow ("arr", SA.length arr) arr
+toArraySlow bs = traceShow ("arr" :: String, SA.length arr) arr
   where
     arr = SA.fromList (BS.unpack bs)
