@@ -32,6 +32,7 @@ Library
                      , stm-containers
                      , hashable
                      , time
+                     , network-byte-order
         Hs-Source-Dirs: ./src
         Default-Language: Haskell2010
         ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports        

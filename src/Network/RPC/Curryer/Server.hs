@@ -21,8 +21,6 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.FastBuilder as BB
 import Streamly.Data.Fold as FL
 import qualified Streamly.Internal.Data.Stream.IsStream as S
-import Data.Foldable
-import Data.Bits
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
 import qualified Data.UUID.V4 as UUIDBase
@@ -31,6 +29,7 @@ import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 import Control.Monad
 import Data.Hashable
 import System.Timeout
+import qualified Network.ByteOrder as BO
 
 -- for toArrayS conversion
 import qualified Data.ByteString.Internal as BSI
@@ -108,7 +107,7 @@ messageBoundaryP = do
   let x = FL.toList
   w4x8 <- PD.take 4 x
   traceShowM ("w4x8"::String, w4x8)
-  let c = fromIntegral (fromOctets w4x8)
+  let c = fromIntegral (BO.word32 (BS.pack w4x8))
   traceShowM ("c"::String, c)
   vals <- PD.take c x
   let bytes = BS.pack vals
@@ -189,19 +188,6 @@ drainSocketMessages sock msgHandler = do
             msgHandler val --add response function
   S.drain $ serially $ S.parseManyD messageBoundaryP sockStream & S.mapM handler
 
-fromOctets :: [Word8] -> Word32
-fromOctets = foldl' accum 0
-  where
-    accum a o = (a `shiftL` 8) .|. fromIntegral o
-
-octets :: Word32 -> [Word8]
-octets w = 
-    [ fromIntegral (w `shiftR` 24)
-    , fromIntegral (w `shiftR` 16)
-    , fromIntegral (w `shiftR` 8)
-    , fromIntegral w
-    ]
-
 --send length-tagged bytestring, perhaps should be in network byte order?
 sendMessage :: Serialise a => Message a -> Socket -> IO ()
 sendMessage msg socket' = do
@@ -210,7 +196,7 @@ sendMessage msg socket' = do
       msgbytes = serialise msg
       fullbytes = lenbytes <> msgbytes
       len = BS.length msgbytes
-      lenbytes = BS.pack (octets (fromIntegral len))
+      lenbytes = BO.bytestring32 (fromIntegral len)
   --when (dbgByteString /= msgbytes) (error "mismatch!")
   
   byteCount <- Socket.send socket' fullbytes
