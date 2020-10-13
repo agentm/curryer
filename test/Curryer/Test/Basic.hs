@@ -127,7 +127,7 @@ testSyncClientCallTimeout = do
       mkConn = connect clientHandler localHostAddr port
   conn <- mkConn
   let c :: IO (Either ConnectionError TestResponse)
-      c = callTimeout (Just 1000) conn (DelayMicrosecondsReq 500)
+      c = callTimeout (Just 500) conn (DelayMicrosecondsReq 1000)
   x <- c
   assertEqual "client sync timeout" (Left TimeoutError) x
   close conn

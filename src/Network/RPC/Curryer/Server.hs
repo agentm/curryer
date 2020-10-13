@@ -7,7 +7,7 @@ import Streamly.Network.Socket
 import Streamly.Internal.Network.Socket (handleWithM)
 import Network.Socket as Socket
 import Network.Socket.ByteString as Socket
-import Streamly.Internal.Data.Parser.ParserD as PD
+import Streamly.Internal.Data.Parser as P
 import Codec.Winery
 import Codec.Winery.Internal (varInt, decodeVarInt, getBytes)
 import Codec.Winery.Class (mkExtractor)
@@ -37,7 +37,7 @@ import Foreign.ForeignPtr (plusForeignPtr)
 import Foreign.ForeignPtr.Unsafe (unsafeForeignPtrToPtr)
 import GHC.Ptr (plusPtr)
 
-import Debug.Trace
+--import Debug.Trace
 
 data ClientHelloMessage = ClientHelloMessage Int Int
   deriving Generic
@@ -105,13 +105,13 @@ localHostAddr = (127,0,0,1)
 messageBoundaryP :: Parser IO Word8 BS.ByteString
 messageBoundaryP = do
   let x = FL.toList
-  w4x8 <- PD.take 4 x
-  traceShowM ("w4x8"::String, w4x8)
+  w4x8 <- P.take 4 x
+  --traceShowM ("w4x8"::String, w4x8)
   let c = fromIntegral (BO.word32 (BS.pack w4x8))
-  traceShowM ("c"::String, c)
-  vals <- PD.take c x
+  --traceShowM ("c"::String, c)
+  vals <- P.take c x
   let bytes = BS.pack vals
-  traceShowM ("parsedBytes"::String, c, BS.length bytes, bytes)
+  --traceShowM ("parsedBytes"::String, c, BS.length bytes, bytes)
   pure bytes
 
 type NewConnectionHandler msg = IO (Maybe msg)
@@ -186,22 +186,20 @@ drainSocketMessages sock msgHandler = do
             print err
           Right val -> 
             msgHandler val --add response function
-  S.drain $ serially $ S.parseManyD messageBoundaryP sockStream & S.mapM handler
+  S.drain $ serially $ S.parseMany messageBoundaryP sockStream & S.mapM handler
 
 --send length-tagged bytestring, perhaps should be in network byte order?
 sendMessage :: Serialise a => Message a -> Socket -> IO ()
 sendMessage msg socket' = do
-  let -- byteArray = toArraySlow fullbytes
-      --dbgByteString = BS.pack (SA.toList byteArray)
+  let 
       msgbytes = serialise msg
       fullbytes = lenbytes <> msgbytes
       len = BS.length msgbytes
       lenbytes = BO.bytestring32 (fromIntegral len)
-  --when (dbgByteString /= msgbytes) (error "mismatch!")
   
   byteCount <- Socket.send socket' fullbytes
   when (byteCount /= BS.length fullbytes) (error "bytes sent mismatch")  
-  traceShowM ("sent bytes:" :: String, byteCount, fullbytes)
+  --traceShowM ("sent bytes:" :: String, byteCount, fullbytes)
 
 
 
@@ -219,6 +217,6 @@ toArrayS (BSI.PS fp off len) = SA.Array nfp endPtr
     endPtr = unsafeForeignPtrToPtr nfp `plusPtr` len `plusPtr` 1 -- ? why +1?
 
 toArraySlow :: BS.ByteString -> SA.Array Word8
-toArraySlow bs = traceShow ("arr" :: String, SA.length arr) arr
+toArraySlow bs = arr
   where
     arr = SA.fromList (BS.unpack bs)
