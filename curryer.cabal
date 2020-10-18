@@ -59,9 +59,11 @@ Test-Suite test
 Benchmark perf
     Default-Language: Haskell2010
     Default-Extensions: OverloadedStrings
-    Build-Depends: base, criterion, curryer, network, winery, async
+    Build-Depends: base, criterion, curryer, network, winery, async, bytestring
+
     Main-Is: Basic.hs
     Type: exitcode-stdio-1.0
-    GHC-Options: -Wall -threaded -rtsopts
+    GHC-Options: -Wall -threaded -rtsopts -fprof-auto
     HS-Source-Dirs: ./bench
+    
   

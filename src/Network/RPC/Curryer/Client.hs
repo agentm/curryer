@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeApplications, RankNTypes, ScopedTypeVariables #-}
 module Network.RPC.Curryer.Client where
 import Network.RPC.Curryer.Server
 import Network.Socket as Socket
@@ -10,34 +11,47 @@ import Control.Concurrent.MVar
 import GHC.Conc
 import Data.Time.Clock
 import System.Timeout
+import Data.Proxy
 
 type SyncMap a = STMMap.Map UUID (MVar (Either ConnectionError a), UTCTime)
 -- the request map holds
-data Connection a = Connection Socket (Async ()) (SyncMap a)
+data Connection a = Connection { _conn_sock :: Socket,
+                                 _conn_asyncThread :: Async (),
+                                 _conn_syncmap :: SyncMap a
+                               }
 
-connect :: (Serialise msg) =>
-           AsyncMessageHandler msg ->
+connect :: forall clientmsg. (Serialise clientmsg) =>
+           AsyncMessageHandler clientmsg ->
            HostAddr ->
            PortNumber ->
-           IO (Connection msg)
+           IO (Connection clientmsg)
 connect notificationCallback hostAddr portNum = do
   sock <- TCP.connect hostAddr portNum
   syncmap <- STMMap.newIO
-  asyncThread <- async (clientAsync sock syncmap notificationCallback)
-  pure (Connection sock asyncThread syncmap)
+  let decoder :: Decoder (Message clientmsg)
+      decoder = case getDecoder (schema (Proxy @(Message clientmsg))) of
+        Left err -> error (show err)
+        Right dec -> dec
+  asyncThread <- async (clientAsync sock syncmap decoder notificationCallback)
+  pure (Connection {
+           _conn_sock = sock,
+           _conn_asyncThread = asyncThread,
+           _conn_syncmap = syncmap
+           })
 
 close :: Connection a -> IO ()
-close (Connection sock asyncThread _) = do
-  Socket.close sock
-  cancel asyncThread
+close conn = do
+  Socket.close (_conn_sock conn)
+  cancel (_conn_asyncThread conn)
 
 -- async thread for handling client-side incoming messages- dispatch to proper waiting thread or handler asynchronous notifications
-clientAsync :: Serialise b =>
+clientAsync :: forall b. Serialise b =>
   Socket ->
   SyncMap b ->
+  Decoder (Message b) ->
   AsyncMessageHandler b ->
   IO ()
-clientAsync sock syncmap asyncHandler = do
+clientAsync sock syncmap decoder asyncHandler = do
   -- ping proper thread to continue
   let findRequest requestId =
         atomically $ do
@@ -46,7 +60,7 @@ clientAsync sock syncmap asyncHandler = do
           pure val'        
   
   let responseHandler responseMsg = do
-        putStrLn "client-side message handler"
+        --putStrLn "client-side message handler"
         case responseMsg of
           Response requestId val -> do
             varval <- findRequest requestId
@@ -62,21 +76,21 @@ clientAsync sock syncmap asyncHandler = do
             case varval of
               Nothing -> error "dumped unrequested timeout response"
               Just (mVar,_) -> putMVar mVar (Left TimeoutError)
-            
-  drainSocketMessages sock responseHandler
+  drainSocketMessages sock decoder responseHandler
 
 call :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError response)
 call = callTimeout Nothing
 
 -- | Send a request to the remote server and returns a response.
 callTimeout :: (Serialise request, Serialise response) => Maybe Int -> Connection response -> request -> IO (Either ConnectionError response)
-callTimeout mTimeout (Connection sock _ mVarMap) msg = do
+callTimeout mTimeout conn msg = do
+  let mVarMap = _conn_syncmap conn
   requestID <- UUID <$> UUIDBase.nextRandom
   -- setup mvar to wait for response
   responseMVar <- newEmptyMVar
   now <- getCurrentTime
   atomically $ STMMap.insert (responseMVar, now) requestID mVarMap
-  sendMessage (ResponseExpectedRequest requestID mTimeout msg) sock
+  sendMessage (ResponseExpectedRequest requestID mTimeout msg) (_conn_sock conn)
   let timeoutMicroseconds =
         case mTimeout of
           Just timeout' -> timeout' + 100 --add 100 ms to account for unknown network latency
@@ -90,8 +104,8 @@ callTimeout mTimeout (Connection sock _ mVarMap) msg = do
     Just res -> pure res
 
 asyncCall :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError ())
-asyncCall (Connection sock _ _) msg = do
+asyncCall conn msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
-  sendMessage (AsyncRequest requestID msg) sock
+  sendMessage (AsyncRequest requestID msg) (_conn_sock conn)
   pure (Right ())
   

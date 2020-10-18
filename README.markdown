@@ -9,4 +9,4 @@ Curryer is inspired by the now unmaintained [distributed-process](https://hackag
 * blocking and non-blocking remote function calls
 * asynchronous server-to-client callbacks (for server-initiated notifications)
 * timeouts
-
+* utilizes versionable shared ADT instead of shared function `StaticPtr`s
