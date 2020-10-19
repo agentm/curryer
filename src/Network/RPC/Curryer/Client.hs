@@ -70,7 +70,11 @@ clientAsync sock syncmap decoder asyncHandler = do
           AsyncRequest _ asyncMsg ->
             asyncHandler asyncMsg
           ResponseExpectedRequest{} -> error "dumped response expected request"
-          ExceptionResponse _ -> error "TODO Exception"
+          ExceptionResponse requestId excString -> do
+            varval <- findRequest requestId
+            case varval of
+              Nothing -> error "dumped unrequested exception response"
+              Just (mVar,_) -> putMVar mVar (Left (ExceptionError excString))
           TimedOutResponse requestId -> do
             varval <- findRequest requestId
             case varval of

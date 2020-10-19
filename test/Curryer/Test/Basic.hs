@@ -9,6 +9,7 @@ import Network.Socket (SockAddr(..))
 import Control.Concurrent.Async
 import Control.Monad
 import Control.Concurrent
+import Data.List
 
 import Network.RPC.Curryer.Server
 import Network.RPC.Curryer.Client
@@ -17,7 +18,8 @@ testTree :: TestTree
 testTree = testGroup "basic" [testCase "simple" testSimpleCall,
                               testCase "client async" testAsyncServerCall,
                               testCase "server async" testAsyncClientCall,
-                              testCase "client sync timeout" testSyncClientCallTimeout
+                              testCase "client sync timeout" testSyncClientCallTimeout,
+                              testCase "server-side exception" testSyncException
                              ]
 
 --client-to-server request
@@ -25,6 +27,7 @@ data TestRequest = AddTwoNumbersReq Int Int
                  | TestAsyncReq String
                  | TestCallMeBackReq String
                  | DelayMicrosecondsReq Int
+                 | ThrowServerSideExceptionReq
   deriving (Generic, Show)
   deriving Serialise via WineryVariant TestRequest
 
@@ -52,6 +55,7 @@ testServerMessageHandler mAsyncMVar msg = do
       DelayMicrosecondsReq ms -> do
         threadDelay ms
         pure (HandlerResponse DelayMicrosecondsResp)
+      ThrowServerSideExceptionReq -> error "test server exception"
       
 -- test a simple client-to-server round-trip function execution
 testSimpleCall :: Assertion
@@ -130,6 +134,25 @@ testSyncClientCallTimeout = do
       c = callTimeout (Just 500) conn (DelayMicrosecondsReq 1000)
   x <- c
   assertEqual "client sync timeout" (Left TimeoutError) x
+  close conn
+  cancel server
+  
+testSyncException :: Assertion
+testSyncException = do
+  readyVar <- newEmptyMVar
+        
+  server <- async (serve (pure Nothing) (testServerMessageHandler Nothing) localHostAddr 0 (Just readyVar))
+  (SockAddrInet port _) <- takeMVar readyVar
+  let clientHandler :: AsyncMessageHandler TestResponse
+      clientHandler _ = error "async handler called"
+      mkConn :: IO (Connection TestResponse)
+      mkConn = connect clientHandler localHostAddr port
+  conn <- mkConn
+  ret <- call conn ThrowServerSideExceptionReq
+  case ret of
+    Left (ExceptionError actualExc) ->
+      assertBool "server-side exception" ("test server exception" `isPrefixOf` actualExc)
+    Right _ -> assertFailure "missed exception"
   close conn
   cancel server
   

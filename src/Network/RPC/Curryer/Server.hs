@@ -56,15 +56,14 @@ data Message a = Response UUID a
                 | AsyncRequest UUID a
                 | ResponseExpectedRequest UUID (Maybe Timeout) a
                 | TimedOutResponse UUID
-                -- | Services                
-                | ExceptionResponse String
+                | ExceptionResponse UUID String
                 deriving (Generic, Show)
                 deriving Serialise via WineryVariant (Message a)
 
 -- | The response type 
 data HandlerResponse a = NoResponse
                        | HandlerResponse a
-                       | HandlerException a
+                       | HandlerException String
                        deriving Generic
                        deriving Serialise via WineryVariant (HandlerResponse a)
 
@@ -89,6 +88,7 @@ instance Serialise UUID where
 
 data ConnectionError = CodecError String -- show of WineryException from exception initiator which cannot otherwise be transmitted over a line due to dependencies on TypeReps
                      | TimeoutError
+                     | ExceptionError String
                      deriving (Generic, Show, Eq)
                      deriving Serialise via WineryVariant ConnectionError
 
@@ -130,7 +130,6 @@ serve connhandler userMsgHandler hostaddr port mSockLock = do
           Left exc -> error (show exc)
           Right dec -> dec
       handleSock sock = do
-        -- allow the server to send an async welcome message to the new client, if necessary
         mResp <- connhandler
         case mResp of
           Nothing -> pure ()
@@ -157,13 +156,20 @@ serverMessageHandler sock requestMessageHandler msg = do
   case msg of
       Response{} -> putStrLn "client sent response"
       ResponseExpectedRequest requestID mTimeout val -> do
-        resp <- runTimeout mTimeout (requestMessageHandler val)
-        case resp of
-          Just (HandlerResponse responseVal) -> sendMessage (Response requestID responseVal) sock
-          Just NoResponse -> error "attempt to return non-response to expected response message"
-          Just (HandlerException _) -> error "TODO HandlerException"
-          Nothing ->
-            sendMessage (TimedOutResponse @(Message resp) requestID) sock 
+        let normalResponder = do
+              resp <- runTimeout mTimeout (requestMessageHandler val)
+              case resp of
+                Just (HandlerResponse responseVal) -> sendMessage (Response requestID responseVal) sock
+                Just NoResponse -> error "attempt to return non-response to expected response message"
+                Just (HandlerException exc) -> sendMessage (ExceptionResponse @(Message resp) requestID exc) sock
+                Nothing ->
+                  sendMessage (TimedOutResponse @(Message resp) requestID) sock
+            excHandler :: SomeException -> IO ()
+            excHandler e = do
+              --send exception to client
+              sendMessage (ExceptionResponse @(Message resp) requestID (show e)) sock
+              throwIO e
+        catch normalResponder excHandler
       AsyncRequest _ val -> do
         void $ requestMessageHandler val
         --no response necessary
