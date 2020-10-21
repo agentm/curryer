@@ -19,13 +19,15 @@ testTree = testGroup "basic" [testCase "simple" testSimpleCall,
                               testCase "client async" testAsyncServerCall,
                               testCase "server async" testAsyncClientCall,
                               testCase "client sync timeout" testSyncClientCallTimeout,
-                              testCase "server-side exception" testSyncException
+                              testCase "server-side exception" testSyncException,
+                              testCase "multi-threaded client" testMultithreadedClient
                              ]
 
 --client-to-server request
 data TestRequest = AddTwoNumbersReq Int Int
                  | TestAsyncReq String
                  | TestCallMeBackReq String
+                 | RoundtripStringReq String
                  | DelayMicrosecondsReq Int
                  | ThrowServerSideExceptionReq
   deriving (Generic, Show)
@@ -34,13 +36,13 @@ data TestRequest = AddTwoNumbersReq Int Int
 --server responds to client
 data TestResponse = AddTwoNumbersResp Int
                   | AsyncHello String
-                  | TestCallMeBackResp String
                   | DelayMicrosecondsResp
+                  | RoundtripStringResp String
   deriving (Generic, Show, Eq)
   deriving Serialise via WineryVariant TestResponse
 
 testServerMessageHandler :: Maybe (MVar String) -> TestRequest -> IO (HandlerResponse TestResponse)
-testServerMessageHandler mAsyncMVar msg = do
+testServerMessageHandler mAsyncMVar msg = 
   --print msg        
   case msg of
       --round-trip request to add two Ints
@@ -52,6 +54,7 @@ testServerMessageHandler mAsyncMVar msg = do
           Just mvar -> putMVar mvar s
         pure NoResponse
       TestAsyncReq _ -> pure NoResponse
+      RoundtripStringReq s -> pure (HandlerResponse (RoundtripStringResp s))
       DelayMicrosecondsReq ms -> do
         threadDelay ms
         pure (HandlerResponse DelayMicrosecondsResp)
@@ -85,7 +88,7 @@ testAsyncServerCall = do
   receivedAsyncMessageVar <- newEmptyMVar
   
   let testServerNewConnHandler :: NewConnectionHandler TestResponse
-      testServerNewConnHandler = do
+      testServerNewConnHandler =
         pure (Just (AsyncHello "welcome"))
         
   server <- async (serve testServerNewConnHandler (testServerMessageHandler Nothing) localHostAddr 0 (Just portReadyVar))
@@ -155,4 +158,24 @@ testSyncException = do
     Right _ -> assertFailure "missed exception"
   close conn
   cancel server
-  
+
+--throw large messages (> PIPE_BUF) at the server from multiple client connections to exercise the socket lock
+testMultithreadedClient :: Assertion
+testMultithreadedClient = do
+  readyVar <- newEmptyMVar
+        
+  server <- async (serve (pure Nothing) (testServerMessageHandler Nothing) localHostAddr 0 (Just readyVar))
+  (SockAddrInet port _) <- takeMVar readyVar
+  let clientHandler :: AsyncMessageHandler TestResponse
+      clientHandler _ = error "async handler called"
+      mkConn :: IO (Connection TestResponse)
+      mkConn = connect clientHandler localHostAddr port
+  conn <- mkConn
+  let bigString = replicate (1024 * 1000) 'x'
+  replicateM_ 10 $ do
+    ret <- call conn (RoundtripStringReq bigString)
+    assertEqual "big string multithread" (Right (RoundtripStringResp bigString)) ret
+    putStrLn "plus one"
+  close conn
+  cancel server
+    

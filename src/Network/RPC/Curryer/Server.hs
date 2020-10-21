@@ -12,7 +12,7 @@ import Codec.Winery
 import Codec.Winery.Internal (varInt, decodeVarInt, getBytes)
 import Codec.Winery.Class (mkExtractor)
 import GHC.Generics
-import Control.Concurrent.MVar (MVar)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception
 import Data.Function ((&))
 import Data.Word
@@ -49,6 +49,20 @@ traceBytes msg bs = traceShowM (msg, BS.length bs, bs)
 #else
 traceBytes _ _ = pure ()
 #endif
+
+data Locking a = Locking (MVar ()) a
+
+newLock :: a -> IO (Locking a)
+newLock x = do
+  lock <- newMVar ()
+  pure (Locking lock x)
+  
+withLock :: Locking a -> (a -> IO b) -> IO b
+withLock (Locking mvar v) m =
+  withMVar mvar $ \_ -> m v
+
+lockless :: Locking a -> a
+lockless (Locking _ a) = a
 
 type Timeout = Int
 
@@ -131,23 +145,24 @@ serve connhandler userMsgHandler hostaddr port mSockLock = do
           Right dec -> dec
       handleSock sock = do
         mResp <- connhandler
+        lockingSocket <- newLock sock
         case mResp of
           Nothing -> pure ()
           Just resp -> do
             requestID <- UUID <$> UUIDBase.nextRandom            
-            sendMessage (AsyncRequest requestID resp) sock
-        drainSocketMessages sock (decoder userMsgHandler) (serverMessageHandler sock userMsgHandler)
+            sendMessage (AsyncRequest requestID resp) lockingSocket
+        drainSocketMessages sock (decoder userMsgHandler) (serverMessageHandler lockingSocket userMsgHandler)
   serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & parallely . S.mapM (handleWithM handleSock) & S.drain
   pure True
 
 serverMessageHandler :: forall req resp. (Show req,
                           Serialise req,
                           Serialise resp)
-                     => Socket
+                     => Locking Socket
                      -> NewMessageHandler req resp
                      -> Message req
                      -> IO ()
-serverMessageHandler sock requestMessageHandler msg = do
+serverMessageHandler sockLock requestMessageHandler msg = do
   --putStrLn $ "GOT MSG " ++ show msg
   let --runTimeout :: IO (HandlerResponse resp) -> IO (Maybe (HandlerResponse resp))
       runTimeout mTimeout m = case mTimeout of
@@ -159,18 +174,18 @@ serverMessageHandler sock requestMessageHandler msg = do
         let normalResponder = do
               resp <- runTimeout mTimeout (requestMessageHandler val)
               case resp of
-                Just (HandlerResponse responseVal) -> sendMessage (Response requestID responseVal) sock
+                Just (HandlerResponse responseVal) -> sendMessage (Response requestID responseVal) sockLock
                 Just NoResponse -> error "attempt to return non-response to expected response message"
-                Just (HandlerException exc) -> sendMessage (ExceptionResponse @(Message resp) requestID exc) sock
+                Just (HandlerException exc) -> sendMessage (ExceptionResponse @(Message resp) requestID exc) sockLock
                 Nothing ->
-                  sendMessage (TimedOutResponse @(Message resp) requestID) sock
+                  sendMessage (TimedOutResponse @(Message resp) requestID) sockLock
             excHandler :: SomeException -> IO ()
             excHandler e = do
               --send exception to client
-              sendMessage (ExceptionResponse @(Message resp) requestID (show e)) sock
+              sendMessage (ExceptionResponse @(Message resp) requestID (show e)) sockLock
               throwIO e
         catch normalResponder excHandler
-      AsyncRequest _ val -> do
+      AsyncRequest _ val ->
         void $ requestMessageHandler val
         --no response necessary
       ExceptionResponse{} -> putStrLn "client sent exception response"
@@ -192,36 +207,15 @@ drainSocketMessages sock decoder msgHandler = do
   S.drain $ serially $ S.parseMany messageBoundaryP sockStream & S.mapM handler
 
 --send length-tagged bytestring, perhaps should be in network byte order?
-sendMessage :: Serialise a => Message a -> Socket -> IO ()
-sendMessage msg socket' = do
+sendMessage :: Serialise a => Message a -> Locking Socket -> IO ()
+sendMessage msg sockLock = do
   let 
       msgbytes = serialiseOnly msg
       fullbytes = lenbytes <> msgbytes
       len = BS.length msgbytes
       lenbytes = BO.bytestring32 (fromIntegral len)
-  
-  byteCount <- Socket.send socket' fullbytes
-  when (byteCount /= BS.length fullbytes) (error "bytes sent mismatch")  
-  traceBytes "sent bytes" fullbytes
 
-
-
---from streamly-bytestring
--- | Convert a 'ByteString' to an array of 'Word8'. This function unwraps the
--- 'ByteString' and wraps it with 'Array' constructors and hence the operation
--- is performed in constant time.
-{-
-{-# INLINE toArrayS #-}
-toArrayS :: BS.ByteString -> SA.Array Word8
---slow path
---toArrayS = SA.fromList . BS.unpack
-toArrayS (BSI.PS fp off len) = SA.Array nfp endPtr
-  where
-    nfp = fp `plusForeignPtr` off
-    endPtr = unsafeForeignPtrToPtr nfp `plusPtr` len `plusPtr` 1 -- ? why +1?
-
-toArraySlow :: BS.ByteString -> SA.Array Word8
-toArraySlow bs = arr
-  where
-    arr = SA.fromList (BS.unpack bs)
--}
+  --Socket.sendAll syscalls send() on a loop until all the bytes are sent, so we need socket locking here to account for serialized messages of size > PIPE_BUF
+  withLock sockLock $ \socket' ->
+    Socket.sendAll socket' fullbytes
+  traceBytes "sendMessage" fullbytes

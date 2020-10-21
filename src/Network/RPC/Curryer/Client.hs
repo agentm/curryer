@@ -15,7 +15,7 @@ import Data.Proxy
 
 type SyncMap a = STMMap.Map UUID (MVar (Either ConnectionError a), UTCTime)
 -- the request map holds
-data Connection a = Connection { _conn_sock :: Socket,
+data Connection a = Connection { _conn_sockLock :: Locking Socket,
                                  _conn_asyncThread :: Async (),
                                  _conn_syncmap :: SyncMap a
                                }
@@ -33,15 +33,17 @@ connect notificationCallback hostAddr portNum = do
         Left err -> error (show err)
         Right dec -> dec
   asyncThread <- async (clientAsync sock syncmap decoder notificationCallback)
+  sockLock <- newLock sock
   pure (Connection {
-           _conn_sock = sock,
+           _conn_sockLock = sockLock,
            _conn_asyncThread = asyncThread,
            _conn_syncmap = syncmap
            })
 
 close :: Connection a -> IO ()
 close conn = do
-  Socket.close (_conn_sock conn)
+  withLock (_conn_sockLock conn) $ \sock ->
+    Socket.close sock
   cancel (_conn_asyncThread conn)
 
 -- async thread for handling client-side incoming messages- dispatch to proper waiting thread or handler asynchronous notifications
@@ -94,7 +96,7 @@ callTimeout mTimeout conn msg = do
   responseMVar <- newEmptyMVar
   now <- getCurrentTime
   atomically $ STMMap.insert (responseMVar, now) requestID mVarMap
-  sendMessage (ResponseExpectedRequest requestID mTimeout msg) (_conn_sock conn)
+  sendMessage (ResponseExpectedRequest requestID mTimeout msg) (_conn_sockLock conn)
   let timeoutMicroseconds =
         case mTimeout of
           Just timeout' -> timeout' + 100 --add 100 ms to account for unknown network latency
@@ -110,6 +112,6 @@ callTimeout mTimeout conn msg = do
 asyncCall :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError ())
 asyncCall conn msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
-  sendMessage (AsyncRequest requestID msg) (_conn_sock conn)
+  sendMessage (AsyncRequest requestID msg) (_conn_sockLock conn)
   pure (Right ())
   
