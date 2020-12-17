@@ -1,8 +1,7 @@
-{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, TypeApplications, CPP, ExistentialQuantification, StandaloneDeriving #-}
+{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, TypeApplications, CPP, ExistentialQuantification, StandaloneDeriving, GADTs #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
-import Streamly
 import qualified Streamly.Prelude as S
 import Streamly.Network.Socket
 import Streamly.Internal.Network.Socket (handleWithM)
@@ -26,11 +25,12 @@ import Streamly.Data.Fold as FL
 import qualified Streamly.Internal.Data.Stream.IsStream as S
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
+import Control.Monad
 
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 --import Control.Monad
 import Data.Hashable
---import System.Timeout
+import System.Timeout
 import qualified Network.ByteOrder as BO
 
 -- for toArrayS conversion
@@ -66,29 +66,47 @@ withLock (Locking mvar v) m =
 lockless :: Locking a -> a
 lockless (Locking _ a) = a
 
-type Timeout = Int
+type Timeout = Word32
 
 type BinaryMessage = BS.ByteString
 
 --includes the fingerprint of the incoming data type (held in the BinaryMessage) to determine how to dispatch the message.
 --add another envelope type for unencoded binary messages for any easy optimization for in-process communication
-data Envelope = Envelope !Fingerprint !MessageType !UUID !BinaryMessage
+data Envelope = Envelope {
+  envFingerprint :: !Fingerprint,
+  envMessageType :: !MessageType,
+  envMsgId :: !UUID,
+  envPayload :: !BinaryMessage
+  }
   deriving (Generic, Show)
-  deriving Serialise via WineryVariant Envelope
+
+type TimeoutMicroseconds = Int
 
 deriving instance Generic Fingerprint
 deriving via WineryVariant Fingerprint instance Serialise Fingerprint
 
-data MessageType = RequestMessage
+data MessageType = RequestMessage TimeoutMicroseconds
                  | ResponseMessage
+                 | TimeoutResponseMessage
                  deriving (Generic, Show)
                  deriving Serialise via WineryVariant MessageType
 
-data MessageHandlers =
-  forall a b. (Show a, Serialise a, Serialise b) => MessageHandlers [RequestHandler a b]
+type MessageHandlers = [RequestHandler]
   
-type RequestHandler a b = a -> IO b
+--newtype RequestHandler = RequestHandler { handler :: forall a b. (Serialise a, Serialise b) => (a -> IO b) }
 
+data RequestHandler where
+  -- | create a request handler with a response
+  RequestHandler :: forall a b. (Serialise a, Serialise b) => (a -> IO b) -> RequestHandler
+  -- | create an asynchronous request handler where the client does not expect nor await a response
+  AsyncRequestHandler :: forall a. Serialise a => (a -> IO ()) -> RequestHandler
+  
+{-
+handleCall :: forall a b. (Serialise a, Serialise b)
+           => (a -> IO b)
+           -> RequestHandler
+handleCall f = RequestHandler f
+-}
 {-data Message a = Response UUID a
                 | AsyncRequest UUID a
                 | ResponseExpectedRequest UUID (Maybe Timeout) a
@@ -136,12 +154,14 @@ allHostAddrs,localHostAddr :: HostAddr
 allHostAddrs = (0,0,0,0)
 localHostAddr = (127,0,0,1)
 
--- Each message is length-prefixed by a 32-bit unsigned length.
+-- Each message is lxggength-prefixed by a 32-bit unsigned length.
 envelopeP :: Parser IO Word8 Envelope
 envelopeP = do
   let s = FL.toList
-      msgTypeP = (P.satisfy (== 0) *> pure RequestMessage) `P.alt`
-                 (P.satisfy (== 1) *> pure ResponseMessage)
+      msgTypeP = (P.satisfy (== 0) *>
+                     (RequestMessage . fromIntegral <$> word32P)) `P.alt`
+                 (P.satisfy (== 1) *> pure ResponseMessage) `P.alt`
+                 (P.satisfy (== 2) *> pure TimeoutResponseMessage)
       lenPrefixedByteStringP = do
         c <- fromIntegral <$> word32P
         BS.pack <$> P.takeEQ c s
@@ -153,8 +173,9 @@ encodeEnvelope (Envelope (Fingerprint fp1 fp2) msgType msgId bs) =
   where
     fingerprintBs = BO.bytestring64 fp1 <> BO.bytestring64 fp2
     msgTypeBs = case msgType of
-      RequestMessage -> BS.singleton 0
+      RequestMessage timeoutms -> BS.singleton 0 <> BO.bytestring32 (fromIntegral timeoutms)
       ResponseMessage -> BS.singleton 1
+      TimeoutResponseMessage -> BS.singleton 2
     msgIdBs =
       case UUIDBase.toWords (_unUUID msgId) of
         (u1, u2, u3, u4) -> foldr (<>) BS.empty (map BO.bytestring32 [u1, u2, u3, u4])
@@ -199,13 +220,13 @@ serve ::
          PortNumber ->
          Maybe (MVar SockAddr) ->
          IO Bool
-serve userMsgHandler hostaddr port mSockLock = do
+serve userMsgHandlers hostaddr port mSockLock = do
   let
       handleSock sock = do
         lockingSocket <- newLock sock
-        drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandler)
+        drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandlers)
         
-  serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & parallely . S.mapM (handleWithM handleSock) & S.drain
+  S.serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & S.parallely . S.mapM (handleWithM handleSock) & S.drain
   pure True
 
 {-serverEnvelopeHandler :: Locking Socket -> MessageHandlers s -> Envelope -> IO ()
@@ -228,27 +249,54 @@ openEnvelope (Envelope eprint _ _ bytes) = do
     else
     Nothing
 
+matchEnvelope :: forall a b. (Serialise a, Serialise b, Typeable b) =>
+              Envelope -> 
+              (a -> IO b) ->
+              Maybe (a -> IO b, a)
+matchEnvelope envelope dispatchf =
+  case openEnvelope envelope :: Maybe a of
+    Nothing -> Nothing
+    Just decoded -> Just (dispatchf, decoded)
+
 serverEnvelopeHandler :: 
                      Locking Socket
                      -> MessageHandlers
                      -> Envelope
                      -> IO ()
-serverEnvelopeHandler sockLock (MessageHandlers msgHandlers) envelope@(Envelope _ RequestMessage msgId _) = do
+serverEnvelopeHandler _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
+serverEnvelopeHandler sockLock msgHandlers envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
   --find first matching handler
-  let firstMatch = foldr firstMatcher Nothing msgHandlers
-      firstMatcher :: forall a b. (Serialise a, Serialise b) => RequestHandler a b -> Maybe (RequestHandler a b, a) -> Maybe (RequestHandler a b, a)
-      firstMatcher msghandler Nothing =
-        case openEnvelope envelope :: Maybe a of
-          Just decoded -> Just (msghandler, decoded)
-          Nothing -> Nothing
-      firstMatcher _ acc = acc
-  case firstMatch of
-    Nothing -> error "failed to handle msg"
-    Just (msghandler, decoded) -> do
-      --TODO add exception handling
-      response <- msghandler decoded
-      sendEnvelope (Envelope (fingerprint response) ResponseMessage msgId (serialise response)) sockLock
-serverEnvelopeHandler _ _ (Envelope _ ResponseMessage _ _) = error "server received response message"    
+  let runTimeout :: IO b -> IO (Maybe b)
+      runTimeout m =
+        if timeoutms == 0 then
+          Just <$> m
+          else
+          timeout (fromIntegral timeoutms) m               
+      firstMatcher (RequestHandler (msghandler :: a -> IO b)) Nothing =
+        case matchEnvelope envelope msghandler of
+          Nothing -> pure Nothing
+          Just (dispatchf, decoded) ->
+            --TODO add exception handling
+             do
+              mResponse <- runTimeout (dispatchf decoded)
+              let envelopeResponse =
+                    case mResponse of
+                      Just response ->
+                        Envelope (fingerprint response) ResponseMessage msgId (serialise response)
+                      Nothing -> Envelope (fingerprint TimeoutError) (TimeoutResponseMessage) msgId (BS.empty)
+              sendEnvelope envelopeResponse sockLock
+              pure (Just ())
+      firstMatcher (AsyncRequestHandler (msghandler :: a -> IO ())) Nothing =
+        case matchEnvelope envelope msghandler of
+          Nothing -> pure Nothing
+          Just (dispatchf, decoded) -> do
+              _ <- dispatchf decoded
+              pure (Just ())
+      firstMatcher _ acc = pure acc
+  foldM_ (flip firstMatcher) Nothing msgHandlers
+serverEnvelopeHandler _ _ (Envelope _ ResponseMessage _ _) = error "server received response message"
+
+
 {-      
       
   
@@ -291,7 +339,7 @@ type AsyncMessageHandler a = a -> IO ()
 drainSocketMessages :: Socket -> EnvelopeHandler -> IO ()
 drainSocketMessages sock envelopeHandler = do
   let sockStream = S.unfold readWithBufferOf (1024 * 4, sock)
-  S.drain $ serially $ S.parseMany envelopeP sockStream & S.mapM envelopeHandler
+  S.drain $ S.serially $ S.parseMany envelopeP sockStream & S.mapM envelopeHandler
 
 --send length-tagged bytestring, perhaps should be in network byte order?
 sendEnvelope :: Envelope -> Locking Socket -> IO ()
@@ -305,3 +353,4 @@ sendEnvelope envelope sockLock = do
 
 fingerprint :: Typeable a => a -> Fingerprint
 fingerprint = typeRepFingerprint . typeOf
+

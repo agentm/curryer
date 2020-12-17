@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeApplications, RankNTypes, ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications, RankNTypes, ScopedTypeVariables, GADTs #-}
 module Network.RPC.Curryer.Client where
 import Network.RPC.Curryer.Server
 import Network.Socket as Socket
@@ -11,24 +11,31 @@ import Control.Concurrent.MVar
 import GHC.Conc
 import Data.Time.Clock
 import System.Timeout
+import Control.Monad
 
 type SyncMap = STMMap.Map UUID (MVar (Either ConnectionError BinaryMessage), UTCTime)
 
 -- the request map holds
 data Connection = Connection { _conn_sockLock :: Locking Socket,
-                                    _conn_asyncThread :: Async (),
-                                    _conn_syncmap :: SyncMap
-                                  }
+                               _conn_asyncThread :: Async (),
+                               _conn_syncmap :: SyncMap
+                             }
+
+-- function handlers run on the client, triggered by the server- useful for asynchronous callbacks
+data ClientAsyncRequestHandler where
+  ClientAsyncRequestHandler :: forall a. Serialise a => (a -> IO ()) -> ClientAsyncRequestHandler
+
+type ClientAsyncRequestHandlers = [ClientAsyncRequestHandler]
 
 connect :: 
-  --AsyncMessageHandler ->
-           HostAddr ->
-           PortNumber ->
-           IO Connection
-connect hostAddr portNum = do
+  ClientAsyncRequestHandlers ->
+  HostAddr ->
+  PortNumber ->
+  IO Connection
+connect asyncHandlers hostAddr portNum = do
   sock <- TCP.connect hostAddr portNum
   syncmap <- STMMap.newIO
-  asyncThread <- async (clientAsync sock syncmap)
+  asyncThread <- async (clientAsync sock syncmap asyncHandlers)
   sockLock <- newLock sock
   pure (Connection {
            _conn_sockLock = sockLock,
@@ -46,20 +53,30 @@ close conn = do
 clientAsync :: 
   Socket ->
   SyncMap ->
-  --AsyncMessageHandler ->
+  ClientAsyncRequestHandlers ->
   IO ()
-clientAsync sock syncmap = do
+clientAsync sock syncmap asyncHandlers = do
   lsock <- newLock sock
-  drainSocketMessages sock (clientEnvelopeHandler lsock syncmap)
+  drainSocketMessages sock (clientEnvelopeHandler asyncHandlers lsock syncmap)
 
---handles envelope responses from server
+--handles envelope responses from server- timeout from server ignored- perhaps that's proper for trusted servers
 clientEnvelopeHandler ::
-  Locking Socket
+  ClientAsyncRequestHandlers
+  -> Locking Socket
   -> SyncMap
   -> Envelope
   -> IO ()
-clientEnvelopeHandler _ _ (Envelope _ RequestMessage _ _) = error "client received request"
-clientEnvelopeHandler _ syncMap (Envelope _ ResponseMessage msgId binaryMessage) = do
+clientEnvelopeHandler handlers _ _ envelope@(Envelope _ (RequestMessage _) _ _) = do
+  --should this run off on another green thread?
+  let firstMatcher Nothing (ClientAsyncRequestHandler dispatchf) = do
+        case matchEnvelope envelope dispatchf of
+          Nothing -> pure Nothing
+          Just (dispatchf', decoded) -> do
+            dispatchf' decoded
+            pure (Just ())
+      firstMatcher acc _ = pure acc
+  foldM_ firstMatcher Nothing handlers
+clientEnvelopeHandler _ _ syncMap (Envelope _ ResponseMessage msgId binaryMessage) = do
   --find a matching response item
   match <- atomically $ do
     val' <- STMMap.lookup msgId syncMap
@@ -69,7 +86,15 @@ clientEnvelopeHandler _ syncMap (Envelope _ ResponseMessage msgId binaryMessage)
     Nothing -> error ("dropping unrequested response " <> show msgId)
     Just (mVar, _) ->
         putMVar mVar (Right binaryMessage)
-  
+clientEnvelopeHandler _ _ syncMap (Envelope _ TimeoutResponseMessage msgId _) = do
+  match <- atomically $ do
+    val' <- STMMap.lookup msgId syncMap
+    STMMap.delete msgId syncMap
+    pure val'
+  case match of
+    Nothing -> error ("dropping unrequested timeout response " <> show msgId)
+    Just (mVar, _) ->
+      putMVar mVar (Left TimeoutError)
 
 call :: (Serialise request, Serialise response) => Connection -> request -> IO (Either ConnectionError response)
 call = callTimeout Nothing
@@ -79,7 +104,12 @@ callTimeout :: (Serialise request, Serialise response) => Maybe Int -> Connectio
 callTimeout mTimeout conn msg = do
   requestID <- UUID <$> UUIDBase.nextRandom  
   let mVarMap = _conn_syncmap conn
-      envelope = Envelope fprint RequestMessage requestID (serialise msg)
+      timeoutms = case mTimeout of
+        Nothing -> 0
+        Just tm | tm < 0 -> 0
+        Just tm -> fromIntegral tm
+        
+      envelope = Envelope fprint (RequestMessage timeoutms) requestID (serialise msg)
       fprint = fingerprint msg
   -- setup mvar to wait for response
   responseMVar <- newEmptyMVar
@@ -102,11 +132,11 @@ callTimeout mTimeout conn msg = do
       case deserialise binmsg of
         Left err -> error ("deserialise client error " <> show err)
         Right m -> pure (Right m)
-{-
-asyncCall :: (Serialise request, Serialise response) => Connection response -> request -> IO (Either ConnectionError ())
+
+asyncCall :: Serialise request => Connection -> request -> IO (Either ConnectionError ())
 asyncCall conn msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
-  sendMessage (AsyncRequest requestID msg) (_conn_sockLock conn)
+  let envelope = Envelope fprint (RequestMessage 0) requestID (serialise msg)
+      fprint = fingerprint msg
+  sendEnvelope envelope (_conn_sockLock conn)
   pure (Right ())
-  
--}
