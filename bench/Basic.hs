@@ -15,10 +15,10 @@ main :: IO ()
 main = do
   --start server shared across benchmarks- gather stats on round-trip requests-responses
   portReadyMVar <- newEmptyMVar
-  server <- async (serve benchmarkServerMessageHandlers localHostAddr 0 (Just portReadyMVar))
+  server <- async (serve benchmarkServerMessageHandlers () localHostAddr 0 (Just portReadyMVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar portReadyMVar
-  clientConn <- connect localHostAddr port
+  clientConn <- connect [] localHostAddr port
 
   _ <- syncWaitRequest clientConn 100
   let syncWait ms = nfIO (syncWaitRequest clientConn ms)
@@ -53,12 +53,12 @@ data WaitMillisecondsResp = WaitMillisecondsResp
   deriving (Generic, Show, Eq)
   deriving Serialise via WineryVariant WaitMillisecondsResp
 
-benchmarkServerMessageHandlers :: MessageHandlers
+benchmarkServerMessageHandlers :: MessageHandlers a
 benchmarkServerMessageHandlers =
-  [RequestHandler $ \(WaitMillisecondsReq ms) -> do
+  [RequestHandler $ \_ (WaitMillisecondsReq ms) -> do
       threadDelay (1000 * ms)
       pure WaitMillisecondsResp,
-   RequestHandler $ \(WaitByteStringReq bs) ->
+   RequestHandler $ \_ (WaitByteStringReq bs) ->
       pure bs
   ]
 
