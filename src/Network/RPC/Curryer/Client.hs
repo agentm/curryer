@@ -68,11 +68,11 @@ clientEnvelopeHandler ::
   -> IO ()
 clientEnvelopeHandler handlers _ _ envelope@(Envelope _ (RequestMessage _) _ _) = do
   --should this run off on another green thread?
-  let firstMatcher Nothing (ClientAsyncRequestHandler dispatchf) = do
-        case matchEnvelope envelope dispatchf of
+  let firstMatcher Nothing (ClientAsyncRequestHandler (dispatchf :: a -> IO ())) = do
+        case openEnvelope envelope of
           Nothing -> pure Nothing
-          Just (dispatchf', decoded) -> do
-            dispatchf' decoded
+          Just decoded -> do
+            dispatchf decoded
             pure (Just ())
       firstMatcher acc _ = pure acc
   foldM_ firstMatcher Nothing handlers
@@ -95,6 +95,19 @@ clientEnvelopeHandler _ _ syncMap (Envelope _ TimeoutResponseMessage msgId _) = 
     Nothing -> error ("dropping unrequested timeout response " <> show msgId)
     Just (mVar, _) ->
       putMVar mVar (Left TimeoutError)
+clientEnvelopeHandler _ _ syncMap (Envelope _ ExceptionResponseMessage msgId excPayload) = do
+  match <- atomically $ do
+    val' <- STMMap.lookup msgId syncMap
+    STMMap.delete msgId syncMap
+    pure val'
+  case match of
+    Nothing -> error ("dropping unrequested timeout response " <> show msgId)
+    Just (mVar, _) ->
+      case deserialise excPayload of
+        Left err -> error ("failed to deserialise exception string" <> show err)
+        Right excStr ->
+          putMVar mVar (Left (ExceptionError excStr))
+      
 
 call :: (Serialise request, Serialise response) => Connection -> request -> IO (Either ConnectionError response)
 call = callTimeout Nothing
@@ -126,7 +139,8 @@ callTimeout mTimeout conn msg = do
     --timeout
     Nothing ->
       pure (Left TimeoutError)
-    Just (Left exc) -> error ("exception in client from server: " <> show exc)
+    Just (Left exc) ->
+      pure (Left exc)
     Just (Right binmsg) ->
       --TODO use decoder instead
       case deserialise binmsg of

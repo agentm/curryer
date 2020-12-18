@@ -9,6 +9,8 @@ import Network.Socket (SockAddr(..))
 import Control.Concurrent.Async
 import Control.Monad
 import Control.Concurrent
+import Control.Concurrent.STM
+import Data.List
 
 import Network.RPC.Curryer.Server
 import Network.RPC.Curryer.Client
@@ -17,11 +19,11 @@ import Network.RPC.Curryer.Client
 
 testTree :: TestTree
 testTree = testGroup "basic" [testCase "simple" testSimpleCall
-                             --,testCase "client async" testAsyncServerCall
+                             ,testCase "client async" testAsyncServerCall
                              ,testCase "server async" testAsyncClientCall
-                              --,testCase "client sync timeout" testSyncClientCallTimeout
-                              --,testCase "server-side exception" testSyncException
-                              ,testCase "multi-threaded client" testMultithreadedClient
+                             ,testCase "client sync timeout" testSyncClientCallTimeout
+                             ,testCase "server-side exception" testSyncException
+                             ,testCase "multi-threaded client" testMultithreadedClient
                              ]
 
 
@@ -50,27 +52,28 @@ data ThrowServerSideExceptionReq = ThrowServerSideExceptionReq
   deriving Serialise via WineryVariant ThrowServerSideExceptionReq
 
 --used to server -> client async request
-data AsyncHelloReq = AsyncHelloReq
+data AsyncHelloReq = AsyncHelloReq String
   deriving (Generic, Show)
   deriving Serialise via WineryVariant AsyncHelloReq
 
-testServerMessageHandlers :: Maybe (MVar String) -> MessageHandlers
+testServerMessageHandlers :: Maybe (MVar String) -> MessageHandlers ()
 testServerMessageHandlers mAsyncMVar =
-    [ RequestHandler $ \(AddTwoNumbersReq x y) -> pure (x + y)
-    , RequestHandler $ \(TestCallMeBackReq s) ->
+    [ RequestHandler $ \_ (AddTwoNumbersReq x y) -> pure (x + y)
+    , RequestHandler $ \_ (TestCallMeBackReq s) ->
                          case mAsyncMVar of
                            Nothing -> pure ()
                            Just mvar -> putMVar mvar s
-    , AsyncRequestHandler $ \(TestAsyncReq v) ->
+    , AsyncRequestHandler $ \_ (TestAsyncReq v) ->
         maybe (pure ()) (\mvar -> putMVar mvar v) mAsyncMVar
     -- an async hello to the server generates an async hello to the client        
-    --, AsyncRequestHandler $ \(AsyncReq s) -> currently lacking server state to message client
+    , AsyncRequestHandler $ \sState (AsyncHelloReq s) -> do
+        sendMessage sState (AsyncHelloReq s)
         
-    , RequestHandler $ \(RoundtripStringReq s) -> pure s
-    , RequestHandler $ \(DelayMicrosecondsReq ms) -> do
+    , RequestHandler $ \_ (RoundtripStringReq s) -> pure s
+    , RequestHandler $ \_ (DelayMicrosecondsReq ms) -> do
         threadDelay ms
         pure ()
-    , RequestHandler $ \ThrowServerSideExceptionReq -> do
+    , RequestHandler $ \_ ThrowServerSideExceptionReq -> do
         _ <- error "test server exception"
         pure ()
                ]
@@ -80,7 +83,7 @@ testSimpleCall :: Assertion
 testSimpleCall = do
   readyVar <- newEmptyMVar
         
-  server <- async (serve (testServerMessageHandlers Nothing) localHostAddr 0 (Just readyVar))
+  server <- async (serve (testServerMessageHandlers Nothing) emptyServerState localHostAddr 0 (Just readyVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar readyVar
   conn <- connect [] localHostAddr port
@@ -92,23 +95,25 @@ testSimpleCall = do
 
 
 --test that the client can proces a server-initiated asynchronous callback from the server
-{-
 testAsyncServerCall :: Assertion
 testAsyncServerCall = do
   portReadyVar <- newEmptyMVar
   receivedAsyncMessageVar <- newEmptyMVar
   let clientAsyncHandlers =
-        [ClientAsyncRequestHandler (\AsyncHelloReq ->
-                                       putMVar receivedAsyncMessageVar "")]
-  server <- async (serve clientAsyncHandlers (testServerMessageHandlers receivedAsyncMessageVar) localHostAddr 0 (Just portReadyVar))
+        [ClientAsyncRequestHandler (\(AsyncHelloReq s) ->
+                                       putMVar receivedAsyncMessageVar s)]
+  server <- async (serve (testServerMessageHandlers (Just receivedAsyncMessageVar)) emptyServerState localHostAddr 0 (Just portReadyVar))
   (SockAddrInet port _) <- takeMVar portReadyVar
-  conn <- connect @TestResponse clientHandler localHostAddr port
-  callAsync conn TestAsyncReq
+  conn <- connect clientAsyncHandlers localHostAddr port
+  Right () <- asyncCall conn (AsyncHelloReq "welcome")
   asyncMessage <- takeMVar receivedAsyncMessageVar
   assertEqual "async message" "welcome" asyncMessage
   close conn
   cancel server
--}
+
+
+emptyServerState :: STM ()
+emptyServerState = pure ()
 
 --test that the client can make a non-blocking call
 testAsyncClientCall :: Assertion
@@ -116,7 +121,7 @@ testAsyncClientCall = do
   portReadyVar <- newEmptyMVar
   receivedAsyncMessageVar <- newEmptyMVar
   
-  server <- async (serve (testServerMessageHandlers (Just receivedAsyncMessageVar)) localHostAddr 0 (Just portReadyVar))
+  server <- async (serve (testServerMessageHandlers (Just receivedAsyncMessageVar)) emptyServerState localHostAddr 0 (Just portReadyVar))
   (SockAddrInet port _) <- takeMVar portReadyVar
 
   conn <- connect [] localHostAddr port
@@ -131,7 +136,7 @@ testSyncClientCallTimeout :: Assertion
 testSyncClientCallTimeout = do
   readyVar <- newEmptyMVar
         
-  server <- async (serve (testServerMessageHandlers Nothing) localHostAddr 0 (Just readyVar))
+  server <- async (serve (testServerMessageHandlers Nothing) emptyServerState localHostAddr 0 (Just readyVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar readyVar
   conn <- connect [] localHostAddr port
@@ -140,32 +145,30 @@ testSyncClientCallTimeout = do
   close conn
   cancel server
 
-{-
 testSyncException :: Assertion
 testSyncException = do
   readyVar <- newEmptyMVar
         
-  server <- async (serve (pure Nothing) (testServerMessageHandler Nothing) localHostAddr 0 (Just readyVar))
+  server <- async (serve (testServerMessageHandlers Nothing) emptyServerState localHostAddr 0 (Just readyVar))
   (SockAddrInet port _) <- takeMVar readyVar
-  let clientHandler :: AsyncMessageHandler TestResponse
-      clientHandler _ = error "async handler called"
-      mkConn :: IO (Connection TestResponse)
-      mkConn = connect clientHandler localHostAddr port
-  conn <- mkConn
+
+  conn <- connect [] localHostAddr port
   ret <- call conn ThrowServerSideExceptionReq
   case ret of
     Left (ExceptionError actualExc) ->
       assertBool "server-side exception" ("test server exception" `isPrefixOf` actualExc)
-    Right _ -> assertFailure "missed exception"
+    Left otherErr ->
+      assertFailure ("server-side error " <> show otherErr)
+    Right () -> assertFailure "missed exception"
   close conn
   cancel server
--}
+
 --throw large messages (> PIPE_BUF) at the server from multiple client connections to exercise the socket lock
 testMultithreadedClient :: Assertion
 testMultithreadedClient = do
   readyVar <- newEmptyMVar
         
-  server <- async (serve (testServerMessageHandlers Nothing) localHostAddr 0 (Just readyVar))
+  server <- async (serve (testServerMessageHandlers Nothing) emptyServerState localHostAddr 0 (Just readyVar))
   (SockAddrInet port _) <- takeMVar readyVar
   {-let clientHandler :: AsyncMessageHandler TestResponse
       clientHandler _ = error "async handler called"-}
@@ -174,7 +177,7 @@ testMultithreadedClient = do
   replicateM_ 10 $ do
     ret <- call conn (RoundtripStringReq bigString)
     assertEqual "big string multithread" (Right bigString) ret
-    putStrLn "plus one"
+    --putStrLn "plus one"
   close conn
   cancel server
     

@@ -33,6 +33,7 @@ Library
                      , hashable
                      , time
                      , network-byte-order
+                     , stm
         Hs-Source-Dirs: ./src
         Default-Language: Haskell2010
         ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports        
@@ -54,6 +55,7 @@ Test-Suite test
                , winery
                , network
                , async
+               , stm               
   other-modules: Curryer.Test.Basic
 
 Benchmark perf

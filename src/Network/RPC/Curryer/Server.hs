@@ -25,7 +25,9 @@ import Streamly.Data.Fold as FL
 import qualified Streamly.Internal.Data.Stream.IsStream as S
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
+import qualified Data.UUID.V4 as UUIDBase
 import Control.Monad
+import Control.Concurrent.STM
 
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 --import Control.Monad
@@ -88,41 +90,32 @@ deriving via WineryVariant Fingerprint instance Serialise Fingerprint
 data MessageType = RequestMessage TimeoutMicroseconds
                  | ResponseMessage
                  | TimeoutResponseMessage
+                 | ExceptionResponseMessage
                  deriving (Generic, Show)
                  deriving Serialise via WineryVariant MessageType
 
-type MessageHandlers = [RequestHandler]
+type MessageHandlers serverState = [RequestHandler serverState]
   
---newtype RequestHandler = RequestHandler { handler :: forall a b. (Serialise a, Serialise b) => (a -> IO b) }
-
-data RequestHandler where
+data RequestHandler serverState where
   -- | create a request handler with a response
-  RequestHandler :: forall a b. (Serialise a, Serialise b) => (a -> IO b) -> RequestHandler
+  RequestHandler :: forall a b serverState. (Serialise a, Serialise b) => (ConnectionState serverState -> a -> IO b) -> RequestHandler serverState
   -- | create an asynchronous request handler where the client does not expect nor await a response
-  AsyncRequestHandler :: forall a. Serialise a => (a -> IO ()) -> RequestHandler
+  AsyncRequestHandler :: forall a serverState. Serialise a => (ConnectionState serverState -> a -> IO ()) -> RequestHandler serverState
+
+-- | Passed to
+data ConnectionState a = ConnectionState {
+  connectionServerState :: STM a,
+  connectionSocket :: Locking Socket
+  }
+
+-- | Used by server-side request handlers to send additional messages to the client. This is useful for sending asynchronous responses to the client outside of the normal request-response flow.
+sendMessage :: Serialise a => ConnectionState s -> a -> IO ()
+sendMessage sState msg = do
+  requestID <- UUID <$> UUIDBase.nextRandom
+  let env =
+        Envelope (fingerprint msg) (RequestMessage 0) requestID (serialise msg)
+  sendEnvelope env (connectionSocket sState)
   
-{-
-handleCall :: forall a b. (Serialise a, Serialise b)
-           => (a -> IO b)
-           -> RequestHandler
-handleCall f = RequestHandler f
--}
-{-data Message a = Response UUID a
-                | AsyncRequest UUID a
-                | ResponseExpectedRequest UUID (Maybe Timeout) a
-                | TimedOutResponse UUID
-                | ExceptionResponse UUID String
-                deriving (Generic, Show)
-                deriving Serialise via WineryVariant (Message a)
-
--- | The response type 
-
-data HandlerResponse a = NoResponse
-                       | HandlerResponse a
-                       | HandlerException String
-                       deriving Generic
-                       deriving Serialise via WineryVariant (HandlerResponse a)
--}
 --avoid orphan instance
 newtype UUID = UUID { _unUUID :: UUIDBase.UUID }
   deriving (Show, Eq, B.Binary, Hashable)
@@ -161,7 +154,8 @@ envelopeP = do
       msgTypeP = (P.satisfy (== 0) *>
                      (RequestMessage . fromIntegral <$> word32P)) `P.alt`
                  (P.satisfy (== 1) *> pure ResponseMessage) `P.alt`
-                 (P.satisfy (== 2) *> pure TimeoutResponseMessage)
+                 (P.satisfy (== 2) *> pure TimeoutResponseMessage) `P.alt`
+                 (P.satisfy (== 3) *> pure ExceptionResponseMessage)
       lenPrefixedByteStringP = do
         c <- fromIntegral <$> word32P
         BS.pack <$> P.takeEQ c s
@@ -176,6 +170,7 @@ encodeEnvelope (Envelope (Fingerprint fp1 fp2) msgType msgId bs) =
       RequestMessage timeoutms -> BS.singleton 0 <> BO.bytestring32 (fromIntegral timeoutms)
       ResponseMessage -> BS.singleton 1
       TimeoutResponseMessage -> BS.singleton 2
+      ExceptionResponseMessage -> BS.singleton 3
     msgIdBs =
       case UUIDBase.toWords (_unUUID msgId) of
         (u1, u2, u3, u4) -> foldr (<>) BS.empty (map BO.bytestring32 [u1, u2, u3, u4])
@@ -215,44 +210,34 @@ type NewConnectionHandler msg = IO (Maybe msg)
 type NewMessageHandler req resp = req -> IO resp
   
 serve :: 
-         MessageHandlers -> 
+         MessageHandlers s->
+         STM s ->
          HostAddr ->
          PortNumber ->
          Maybe (MVar SockAddr) ->
          IO Bool
-serve userMsgHandlers hostaddr port mSockLock = do
+serve userMsgHandlers serverState hostaddr port mSockLock = do
   let
       handleSock sock = do
         lockingSocket <- newLock sock
-        drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandlers)
+        drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandlers serverState)
         
   S.serially (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & S.parallely . S.mapM (handleWithM handleSock) & S.drain
   pure True
 
-{-serverEnvelopeHandler :: Locking Socket -> MessageHandlers s -> Envelope -> IO ()
-serverEnvelopeHandler sockLock (Envelope fprint RequestMessage msgId messagebs) = do
- error "spam"
-serverEnvelopeHandler sockLock (Envelope fprint ResponseMessage msgId messagebs) = do  
-  error "spam2"
--}
-
 openEnvelope :: forall s. (Serialise s, Typeable s) => Envelope -> Maybe s
 openEnvelope (Envelope eprint _ _ bytes) = do
-  {-let decoder = case getDecoder (schema (Proxy :: Proxy s)) of
-        Left err -> error (show err)
-        Right dec -> dec-}
   if eprint == fingerprint (undefined :: s) then
     case deserialise bytes of
       Left err -> error (show err)
       Right v -> Just v
-    --Just (evalDecoder decoder bytes)
     else
     Nothing
 
-matchEnvelope :: forall a b. (Serialise a, Serialise b, Typeable b) =>
+matchEnvelope :: forall a b s. (Serialise a, Serialise b, Typeable b) =>
               Envelope -> 
-              (a -> IO b) ->
-              Maybe (a -> IO b, a)
+              (ConnectionState s -> a -> IO b) ->
+              Maybe (ConnectionState s -> a -> IO b, a)
 matchEnvelope envelope dispatchf =
   case openEnvelope envelope :: Maybe a of
     Nothing -> Nothing
@@ -260,77 +245,54 @@ matchEnvelope envelope dispatchf =
 
 serverEnvelopeHandler :: 
                      Locking Socket
-                     -> MessageHandlers
+                     -> MessageHandlers s
+                     -> STM s         
                      -> Envelope
                      -> IO ()
-serverEnvelopeHandler _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
-serverEnvelopeHandler sockLock msgHandlers envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
+serverEnvelopeHandler _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
+serverEnvelopeHandler _ _ _ (Envelope _ ExceptionResponseMessage _ _) = pure ()
+serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
   --find first matching handler
   let runTimeout :: IO b -> IO (Maybe b)
-      runTimeout m =
+      runTimeout m = 
         if timeoutms == 0 then
           Just <$> m
-          else
-          timeout (fromIntegral timeoutms) m               
-      firstMatcher (RequestHandler (msghandler :: a -> IO b)) Nothing =
-        case matchEnvelope envelope msghandler of
-          Nothing -> pure Nothing
-          Just (dispatchf, decoded) ->
-            --TODO add exception handling
-             do
-              mResponse <- runTimeout (dispatchf decoded)
-              let envelopeResponse =
-                    case mResponse of
-                      Just response ->
-                        Envelope (fingerprint response) ResponseMessage msgId (serialise response)
-                      Nothing -> Envelope (fingerprint TimeoutError) (TimeoutResponseMessage) msgId (BS.empty)
-              sendEnvelope envelopeResponse sockLock
-              pure (Just ())
-      firstMatcher (AsyncRequestHandler (msghandler :: a -> IO ())) Nothing =
+        else
+          timeout (fromIntegral timeoutms) m
+
+      sState = ConnectionState {
+        connectionServerState = serverState,
+        connectionSocket = sockLock
+        }
+            
+      firstMatcher (RequestHandler msghandler) Nothing =
         case matchEnvelope envelope msghandler of
           Nothing -> pure Nothing
           Just (dispatchf, decoded) -> do
-              _ <- dispatchf decoded
+            --TODO add exception handling
+            mResponse <- runTimeout (dispatchf sState decoded)
+            let envelopeResponse =
+                  case mResponse of
+                        Just response ->
+                          Envelope (fingerprint response) ResponseMessage msgId (serialise response)
+                        Nothing ->
+                          Envelope (fingerprint TimeoutError) (TimeoutResponseMessage) msgId (BS.empty)
+            sendEnvelope envelopeResponse sockLock
+            pure (Just ())
+      firstMatcher (AsyncRequestHandler msghandler) Nothing =        
+        case matchEnvelope envelope msghandler of
+          Nothing -> pure Nothing
+          Just (dispatchf, decoded) -> do
+              _ <- dispatchf sState decoded
               pure (Just ())
       firstMatcher _ acc = pure acc
-  foldM_ (flip firstMatcher) Nothing msgHandlers
-serverEnvelopeHandler _ _ (Envelope _ ResponseMessage _ _) = error "server received response message"
-
-
-{-      
-      
-  
-  --putStrLn $ "GOT MSG " ++ show msg
-  let --runTimeout :: IO (HandlerResponse resp) -> IO (Maybe (HandlerResponse resp))
-      runTimeout mTimeout m = case mTimeout of
-                       Nothing -> Just <$> m
-                       Just timeoutMicroseconds -> timeout timeoutMicroseconds m
-  case msg of
-      Response{} -> putStrLn "client sent response"
-      ResponseExpectedRequest requestID mTimeout val -> do
-        let normalResponder = do
-              resp <- runTimeout mTimeout (requestMessageHandler val)
-              case resp of
-                Just (HandlerResponse responseVal) -> sendMessage (Response requestID responseVal) sockLock
-                Just NoResponse -> error "attempt to return non-response to expected response message"
-                Just (HandlerException exc) -> sendMessage (ExceptionResponse @(Message resp) requestID exc) sockLock
-                Nothing ->
-                  sendMessage (TimedOutResponse @(Message resp) requestID) sockLock
-            excHandler :: SomeException -> IO ()
-            excHandler e = do
-              --send exception to client
-              sendMessage (ExceptionResponse @(Message resp) requestID (show e)) sockLock
-              throwIO e
-        catch normalResponder excHandler
-      AsyncRequest _ val ->
-        void $ requestMessageHandler val
-        --no response necessary
-      ExceptionResponse{} -> putStrLn "client sent exception response"
-      TimedOutResponse{} -> putStrLn "client sent timed out response"
--}
-
---add callback to allow for responses via socket
---type MessageHandler a = Message a -> IO ()
+  eExc <- try $ foldM_ (flip firstMatcher) Nothing msgHandlers :: IO (Either SomeException ())
+  case eExc of
+    Left exc ->
+      let env = Envelope (fingerprint (show exc)) ExceptionResponseMessage msgId (serialise (show exc)) in
+      sendEnvelope env sockLock
+    Right () -> pure ()
+serverEnvelopeHandler _ _ _ (Envelope _ ResponseMessage _ _) = error "server received response message"
 
 type EnvelopeHandler = Envelope -> IO ()
 
