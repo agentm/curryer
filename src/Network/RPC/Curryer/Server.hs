@@ -27,7 +27,6 @@ import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
 import qualified Data.UUID.V4 as UUIDBase
 import Control.Monad
-import Control.Concurrent.STM
 
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 --import Control.Monad
@@ -104,7 +103,7 @@ data RequestHandler serverState where
 
 -- | Passed to
 data ConnectionState a = ConnectionState {
-  connectionServerState :: STM a,
+  connectionServerState :: a,
   connectionSocket :: Locking Socket
   }
 
@@ -211,7 +210,7 @@ type NewMessageHandler req resp = req -> IO resp
   
 serve :: 
          MessageHandlers s->
-         STM s ->
+         s ->
          HostAddr ->
          PortNumber ->
          Maybe (MVar SockAddr) ->
@@ -246,7 +245,7 @@ matchEnvelope envelope dispatchf =
 serverEnvelopeHandler :: 
                      Locking Socket
                      -> MessageHandlers s
-                     -> STM s         
+                     -> s         
                      -> Envelope
                      -> IO ()
 serverEnvelopeHandler _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()

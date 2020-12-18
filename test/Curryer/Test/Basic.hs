@@ -24,6 +24,7 @@ testTree = testGroup "basic" [testCase "simple" testSimpleCall
                              ,testCase "client sync timeout" testSyncClientCallTimeout
                              ,testCase "server-side exception" testSyncException
                              ,testCase "multi-threaded client" testMultithreadedClient
+                             ,testCase "server state" testServerState
                              ]
 
 
@@ -50,6 +51,10 @@ data RoundtripStringReq = RoundtripStringReq String
 data ThrowServerSideExceptionReq = ThrowServerSideExceptionReq
   deriving (Generic, Show)
   deriving Serialise via WineryVariant ThrowServerSideExceptionReq
+
+data ChangeServerState = ChangeServerState
+  deriving (Generic, Show)
+  deriving Serialise via WineryVariant ChangeServerState
 
 --used to server -> client async request
 data AsyncHelloReq = AsyncHelloReq String
@@ -112,8 +117,8 @@ testAsyncServerCall = do
   cancel server
 
 
-emptyServerState :: STM ()
-emptyServerState = pure ()
+emptyServerState :: ()
+emptyServerState = ()
 
 --test that the client can make a non-blocking call
 testAsyncClientCall :: Assertion
@@ -180,5 +185,24 @@ testMultithreadedClient = do
     --putStrLn "plus one"
   close conn
   cancel server
-    
+
+testServerState :: Assertion
+testServerState = do
+  readyVar <- newEmptyMVar
+
+  let serverHandlers = [RequestHandler (\sState ChangeServerState -> 
+                                           atomically $
+                                             modifyTVar (connectionServerState sState) (+ 1))
+                                             ]
+  serverState <- newTVarIO @Int 1
+  server <- async (serve serverHandlers serverState localHostAddr 0 (Just readyVar))
+  (SockAddrInet port _) <- takeMVar readyVar
+  conn <- connect [] localHostAddr port
+  ret <- call conn ChangeServerState
+  assertEqual "server ret" (Right ()) ret
+  serverState' <- readTVarIO serverState
+  assertEqual "server state" 2 serverState'
+  close conn
+  cancel server
+ 
 
