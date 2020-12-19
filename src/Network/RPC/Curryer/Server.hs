@@ -1,4 +1,4 @@
-{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, TypeApplications, CPP, ExistentialQuantification, StandaloneDeriving, GADTs #-}
+{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, CPP, ExistentialQuantification, StandaloneDeriving, GADTs #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
@@ -27,6 +27,7 @@ import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
 import qualified Data.UUID.V4 as UUIDBase
 import Control.Monad
+import Data.Functor
 
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 --import Control.Monad
@@ -97,7 +98,7 @@ data MessageType = RequestMessage TimeoutMicroseconds
 -- | A list of `RequestHandler`s.
 type RequestHandlers serverState = [RequestHandler serverState]
 
--- | 
+-- | Data types for server-side request handlers, in synchronous (client waits for return value) and asynchronous (client does not wait for return value) forms.
 data RequestHandler serverState where
   -- | create a request handler with a response
   RequestHandler :: forall a b serverState. (Serialise a, Serialise b) => (ConnectionState serverState -> a -> IO b) -> RequestHandler serverState
@@ -155,9 +156,9 @@ envelopeP = do
   let s = FL.toList
       msgTypeP = (P.satisfy (== 0) *>
                      (RequestMessage . fromIntegral <$> word32P)) `P.alt`
-                 (P.satisfy (== 1) *> pure ResponseMessage) `P.alt`
-                 (P.satisfy (== 2) *> pure TimeoutResponseMessage) `P.alt`
-                 (P.satisfy (== 3) *> pure ExceptionResponseMessage)
+                 (P.satisfy (== 1) $> ResponseMessage) `P.alt`
+                 (P.satisfy (== 2) $> TimeoutResponseMessage) `P.alt`
+                 (P.satisfy (== 3) $> ExceptionResponseMessage)
       lenPrefixedByteStringP = do
         c <- fromIntegral <$> word32P
         BS.pack <$> P.takeEQ c s
@@ -175,15 +176,13 @@ encodeEnvelope (Envelope (Fingerprint fp1 fp2) msgType msgId bs) =
       ExceptionResponseMessage -> BS.singleton 3
     msgIdBs =
       case UUIDBase.toWords (_unUUID msgId) of
-        (u1, u2, u3, u4) -> foldr (<>) BS.empty (map BO.bytestring32 [u1, u2, u3, u4])
+        (u1, u2, u3, u4) -> foldr ((<>) . BO.bytestring32) BS.empty [u1, u2, u3, u4]
     msgLen = fromIntegral (BS.length bs)
     lenPrefixedBs = BO.bytestring32 msgLen <> bs
 
 fingerprintP :: Parser IO Word8 Fingerprint
-fingerprintP = do
-  f1 <- word64P
-  f2 <- word64P
-  pure (Fingerprint f1 f2)
+fingerprintP =
+  Fingerprint <$> word64P <*> word64P
 
 word64P :: Parser IO Word8 Word64
 word64P = do
@@ -204,8 +203,10 @@ uuidP = do
   u1 <- word32P
   u2 <- word32P
   u3 <- word32P
-  u4 <- word32P
-  pure (UUID (UUIDBase.fromWords u1 u2 u3 u4))
+  --u4 <- word32P
+  --pure (UUID (UUIDBase.fromWords u1 u2 u3 u4))-}
+  --(UUID . UUIDBase.fromWords) <$> word32P <*> word32P <*> word32P <*> word32P
+  UUID . UUIDBase.fromWords u1 u2 u3 <$> word32P
 
 type NewConnectionHandler msg = IO (Maybe msg)
 
@@ -229,7 +230,7 @@ serve userMsgHandlers serverState hostaddr port mSockLock = do
   pure True
 
 openEnvelope :: forall s. (Serialise s, Typeable s) => Envelope -> Maybe s
-openEnvelope (Envelope eprint _ _ bytes) = do
+openEnvelope (Envelope eprint _ _ bytes) =
   if eprint == fingerprint (undefined :: s) then
     case deserialise bytes of
       Left err -> error (show err)
@@ -281,7 +282,7 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
                         Just response ->
                           Envelope (fingerprint response) ResponseMessage msgId (serialise response)
                         Nothing ->
-                          Envelope (fingerprint TimeoutError) (TimeoutResponseMessage) msgId (BS.empty)
+                          Envelope (fingerprint TimeoutError) TimeoutResponseMessage msgId BS.empty
             sendEnvelope envelopeResponse sockLock
             pure (Just ())
       firstMatcher (AsyncRequestHandler msghandler) Nothing =        
