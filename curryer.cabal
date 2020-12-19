@@ -68,4 +68,15 @@ Benchmark perf
     GHC-Options: -Wall -threaded -rtsopts -fprof-auto
     HS-Source-Dirs: ./bench
     
-  
+Executable SimpleKeyValueServer
+    Build-Depends: stm-containers, stm, base, curryer, winery
+    Main-Is: examples/SimpleKeyValueServer.hs
+    GHC-Options: -Wall -threaded
+    Default-Language: Haskell2010
+
+Executable SimpleKeyValueClient
+    Build-Depends: stm, base, curryer, winery, optparse-generic
+    Main-Is: examples/SimpleKeyValueClient.hs
+    GHC-Options: -Wall -threaded
+    Default-Language: Haskell2010
+    

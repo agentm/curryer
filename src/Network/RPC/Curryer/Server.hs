@@ -86,6 +86,7 @@ type TimeoutMicroseconds = Int
 deriving instance Generic Fingerprint
 deriving via WineryVariant Fingerprint instance Serialise Fingerprint
 
+-- | Internal type used to mark envelope types.
 data MessageType = RequestMessage TimeoutMicroseconds
                  | ResponseMessage
                  | TimeoutResponseMessage
@@ -93,15 +94,17 @@ data MessageType = RequestMessage TimeoutMicroseconds
                  deriving (Generic, Show)
                  deriving Serialise via WineryVariant MessageType
 
-type MessageHandlers serverState = [RequestHandler serverState]
-  
+-- | A list of `RequestHandler`s.
+type RequestHandlers serverState = [RequestHandler serverState]
+
+-- | 
 data RequestHandler serverState where
   -- | create a request handler with a response
   RequestHandler :: forall a b serverState. (Serialise a, Serialise b) => (ConnectionState serverState -> a -> IO b) -> RequestHandler serverState
   -- | create an asynchronous request handler where the client does not expect nor await a response
   AsyncRequestHandler :: forall a serverState. Serialise a => (ConnectionState serverState -> a -> IO ()) -> RequestHandler serverState
 
--- | Passed to
+-- | Server state sent in via `serve` and passed to `RequestHandler`s.
 data ConnectionState a = ConnectionState {
   connectionServerState :: a,
   connectionSocket :: Locking Socket
@@ -133,7 +136,7 @@ instance Serialise UUID where
                  x -> error $ "invalid schema element " <> show x
   decodeCurrent = B.decode . BSL.fromStrict <$> (decodeVarInt >>= getBytes)
 
-
+-- | Errors from remote calls.
 data ConnectionError = CodecError String -- show of WineryException from exception initiator which cannot otherwise be transmitted over a line due to dependencies on TypeReps
                      | TimeoutError
                      | ExceptionError String
@@ -146,7 +149,7 @@ allHostAddrs,localHostAddr :: HostAddr
 allHostAddrs = (0,0,0,0)
 localHostAddr = (127,0,0,1)
 
--- Each message is lxggength-prefixed by a 32-bit unsigned length.
+-- Each message is length-prefixed by a 32-bit unsigned length.
 envelopeP :: Parser IO Word8 Envelope
 envelopeP = do
   let s = FL.toList
@@ -207,9 +210,10 @@ uuidP = do
 type NewConnectionHandler msg = IO (Maybe msg)
 
 type NewMessageHandler req resp = req -> IO resp
-  
+
+-- | Listen for new connections and handle requests which are passed the server state 's'. The MVar SockAddr can be be optionally used to know when the server is ready for processing requests.
 serve :: 
-         MessageHandlers s->
+         RequestHandlers s->
          s ->
          HostAddr ->
          PortNumber ->
@@ -242,14 +246,16 @@ matchEnvelope envelope dispatchf =
     Nothing -> Nothing
     Just decoded -> Just (dispatchf, decoded)
 
+-- | Called by `serve` to process incoming envelope requests. Never returns, so use `async` to spin it off on another thread.
 serverEnvelopeHandler :: 
                      Locking Socket
-                     -> MessageHandlers s
+                     -> RequestHandlers s
                      -> s         
                      -> Envelope
                      -> IO ()
 serverEnvelopeHandler _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
 serverEnvelopeHandler _ _ _ (Envelope _ ExceptionResponseMessage _ _) = pure ()
+serverEnvelopeHandler _ _ _ (Envelope _ ResponseMessage _ _) = pure ()
 serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
   --find first matching handler
   let runTimeout :: IO b -> IO (Maybe b)
@@ -291,11 +297,9 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
       let env = Envelope (fingerprint (show exc)) ExceptionResponseMessage msgId (serialise (show exc)) in
       sendEnvelope env sockLock
     Right () -> pure ()
-serverEnvelopeHandler _ _ _ (Envelope _ ResponseMessage _ _) = error "server received response message"
+
 
 type EnvelopeHandler = Envelope -> IO ()
-
-type AsyncMessageHandler a = a -> IO ()
 
 drainSocketMessages :: Socket -> EnvelopeHandler -> IO ()
 drainSocketMessages sock envelopeHandler = do
