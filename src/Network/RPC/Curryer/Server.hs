@@ -42,7 +42,7 @@ import Foreign.ForeignPtr (plusForeignPtr)
 import Foreign.ForeignPtr.Unsafe (unsafeForeignPtrToPtr)
 import GHC.Ptr (plusPtr)
 -}
--- #define CURRYER_SHOW_BYTES 1
+-- define CURRYER_SHOW_BYTES 1
 #if CURRYER_SHOW_BYTES == 1
 import Debug.Trace
 #endif
@@ -144,6 +144,11 @@ data ConnectionError = CodecError String -- show of WineryException from excepti
                      deriving (Generic, Show, Eq)
                      deriving Serialise via WineryVariant ConnectionError
 
+data TimeoutException = TimeoutException
+  deriving Show
+
+instance Exception TimeoutException  
+
 type HostAddr = (Word8, Word8, Word8, Word8)
 
 allHostAddrs,localHostAddr :: HostAddr
@@ -161,7 +166,11 @@ envelopeP = do
                  (P.satisfy (== 3) $> ExceptionResponseMessage)
       lenPrefixedByteStringP = do
         c <- fromIntegral <$> word32P
-        BS.pack <$> P.takeEQ c s
+        --streamly can't handle takeEQ 0, so add special handling
+        if c == 0 then
+          pure BS.empty
+          else
+          BS.pack <$> P.takeEQ c s
   Envelope <$> fingerprintP <*> msgTypeP <*> uuidP <*> lenPrefixedByteStringP
 
 encodeEnvelope :: Envelope -> BS.ByteString
@@ -262,10 +271,13 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
   let runTimeout :: IO b -> IO (Maybe b)
       runTimeout m = 
         if timeoutms == 0 then
-          Just <$> m
+          (Just <$> m) `catch` timeoutExcHandler
         else
-          timeout (fromIntegral timeoutms) m
-
+          (timeout (fromIntegral timeoutms) m) `catch` timeoutExcHandler
+      --allow server-side function to throw TimeoutError which is caught here and becomes TimeoutError value
+      timeoutExcHandler :: TimeoutException -> IO (Maybe b)
+      timeoutExcHandler _ = pure Nothing
+      
       sState = ConnectionState {
         connectionServerState = serverState,
         connectionSocket = sockLock
@@ -281,7 +293,7 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
                   case mResponse of
                         Just response ->
                           Envelope (fingerprint response) ResponseMessage msgId (serialise response)
-                        Nothing ->
+                        Nothing -> 
                           Envelope (fingerprint TimeoutError) TimeoutResponseMessage msgId BS.empty
             sendEnvelope envelopeResponse sockLock
             pure (Just ())
@@ -315,6 +327,7 @@ sendEnvelope envelope sockLock = do
   --Socket.sendAll syscalls send() on a loop until all the bytes are sent, so we need socket locking here to account for serialized messages of size > PIPE_BUF
   withLock sockLock $ \socket' ->
     Socket.sendAll socket' fullbytes
+  --traceShowM ("sendEnvelope", envelope)
   traceBytes "sendEnvelope" fullbytes
 
 fingerprint :: Typeable a => a -> Fingerprint

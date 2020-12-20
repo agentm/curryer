@@ -10,6 +10,7 @@ import Control.Concurrent.Async
 import Control.Monad
 import Control.Concurrent
 import Control.Concurrent.STM
+import Control.Exception
 import Data.List
 
 import Network.RPC.Curryer.Server
@@ -25,6 +26,7 @@ testTree = testGroup "basic" [testCase "simple" testSimpleCall
                              ,testCase "server-side exception" testSyncException
                              ,testCase "multi-threaded client" testMultithreadedClient
                              ,testCase "server state" testServerState
+                             ,testCase "request handler throws timeout" testRequestHandlerThrowTimeout
                              ]
 
 
@@ -60,6 +62,10 @@ data ChangeServerState = ChangeServerState
 data AsyncHelloReq = AsyncHelloReq String
   deriving (Generic, Show)
   deriving Serialise via WineryVariant AsyncHelloReq
+
+data ThrowTimeout = ThrowTimeout
+  deriving (Generic, Show)
+  deriving Serialise via WineryVariant ThrowTimeout
 
 testServerRequestHandlers :: Maybe (MVar String) -> RequestHandlers ()
 testServerRequestHandlers mAsyncMVar =
@@ -202,5 +208,21 @@ testServerState = do
   assertEqual "server state" 2 serverState'
   close conn
   cancel server
- 
 
+--test that the request handler can throw a TimeoutError exception which is converted into a TimeoutError response
+testRequestHandlerThrowTimeout :: Assertion
+testRequestHandlerThrowTimeout = do
+  readyVar <- newEmptyMVar
+
+  let serverHandlers = [RequestHandler (\_ ThrowTimeout ->
+                                          throw TimeoutException >> pure (1 :: Int)
+                                          )
+                                             ]
+  server <- async (serve serverHandlers () localHostAddr 0 (Just readyVar))
+  (SockAddrInet port _) <- takeMVar readyVar
+  conn <- connect [] localHostAddr port
+  ret <- call @_ @Int conn ThrowTimeout
+  assertEqual "handler timeout exception" (Left TimeoutError) ret
+  close conn
+  cancel server
+  
