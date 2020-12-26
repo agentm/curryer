@@ -111,13 +111,14 @@ data ConnectionState a = ConnectionState {
   connectionSocket :: Locking Socket
   }
 
--- | Used by server-side request handlers to send additional messages to the client. This is useful for sending asynchronous responses to the client outside of the normal request-response flow.
-sendMessage :: Serialise a => ConnectionState s -> a -> IO ()
-sendMessage sState msg = do
+-- | Used by server-side request handlers to send additional messages to the client. This is useful for sending asynchronous responses to the client outside of the normal request-response flow. The locking socket can be found in the ConnectionState when a request handler is called.
+sendMessage :: Serialise a => Locking Socket -> a -> IO ()
+sendMessage lockSock msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
   let env =
-        Envelope (fingerprint msg) (RequestMessage 0) requestID (serialise msg)
-  sendEnvelope env (connectionSocket sState)
+        Envelope (fingerprint msg) (RequestMessage timeout) requestID (serialise msg)
+      timeout = 0
+  sendEnvelope env lockSock
   
 --avoid orphan instance
 newtype UUID = UUID { _unUUID :: UUIDBase.UUID }

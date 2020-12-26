@@ -78,7 +78,7 @@ testServerRequestHandlers mAsyncMVar =
         maybe (pure ()) (\mvar -> putMVar mvar v) mAsyncMVar
     -- an async hello to the server generates an async hello to the client        
     , AsyncRequestHandler $ \sState (AsyncHelloReq s) -> do
-        sendMessage sState (AsyncHelloReq s)
+        sendMessage (connectionSocket sState) (AsyncHelloReq s)
         
     , RequestHandler $ \_ (RoundtripStringReq s) -> pure s
     , RequestHandler $ \_ (DelayMicrosecondsReq ms) -> do
