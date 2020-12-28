@@ -65,7 +65,8 @@ Benchmark perf
 
     Main-Is: Basic.hs
     Type: exitcode-stdio-1.0
-    GHC-Options: -Wall -threaded -rtsopts -fprof-auto
+    GHC-Options: -Wall -threaded -rtsopts
+    -- -fprof-auto
     HS-Source-Dirs: ./bench
     
 Executable SimpleKeyValueServer
