@@ -11,6 +11,10 @@ Curryer is inspired by the now unmaintained [distributed-process](https://hackag
 * timeouts
 * leverages [winery](https://hackage.haskell.org/package/winery) for high-performance serialization
 
+## Requirements
+
+* GHC 8.6+
+
 ## Code Example
 
 [Server](https://github.com/agentm/curryer/examples/SimpleKeyValueServer.hs):

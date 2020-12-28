@@ -116,8 +116,8 @@ sendMessage :: Serialise a => Locking Socket -> a -> IO ()
 sendMessage lockSock msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
   let env =
-        Envelope (fingerprint msg) (RequestMessage timeout) requestID (serialise msg)
-      timeout = 0
+        Envelope (fingerprint msg) (RequestMessage timeout') requestID (serialise msg)
+      timeout' = 0
   sendEnvelope env lockSock
   
 --avoid orphan instance
