@@ -1,4 +1,4 @@
-Name: curryer
+Name: curryer-rpc
 Version: 0.1
 License: PublicDomain
 Build-Type: Simple
@@ -51,7 +51,7 @@ Test-Suite test
   build-depends: tasty
                , tasty-hunit
                , base
-               , curryer
+               , curryer-rpc
                , winery
                , network
                , async
@@ -61,7 +61,7 @@ Test-Suite test
 Benchmark perf
     Default-Language: Haskell2010
     Default-Extensions: OverloadedStrings
-    Build-Depends: base, criterion, curryer, network, winery, async, bytestring
+    Build-Depends: base, criterion, curryer-rpc, network, winery, async, bytestring
 
     Main-Is: Basic.hs
     Type: exitcode-stdio-1.0
@@ -69,13 +69,13 @@ Benchmark perf
     HS-Source-Dirs: ./bench
     
 Executable SimpleKeyValueServer
-    Build-Depends: stm-containers, stm, base, curryer, winery
+    Build-Depends: stm-containers, stm, base, curryer-rpc, winery
     Main-Is: examples/SimpleKeyValueServer.hs
     GHC-Options: -Wall -threaded
     Default-Language: Haskell2010
 
 Executable SimpleKeyValueClient
-    Build-Depends: stm, base, curryer, winery, optparse-generic
+    Build-Depends: stm, base, curryer-rpc, winery, optparse-generic
     Main-Is: examples/SimpleKeyValueClient.hs
     GHC-Options: -Wall -threaded
     Default-Language: Haskell2010
