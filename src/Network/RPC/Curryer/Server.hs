@@ -1,4 +1,4 @@
-{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, CPP, ExistentialQuantification, StandaloneDeriving, GADTs #-}
+{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, CPP, ExistentialQuantification, StandaloneDeriving, GADTs, RecordWildCards #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
@@ -35,13 +35,13 @@ import Data.Hashable
 import System.Timeout
 import qualified Network.ByteOrder as BO
 
+
 -- for toArrayS conversion
-{-import qualified Data.ByteString.Internal as BSI
-import qualified Streamly.Internal.Data.Array.Storable.Foreign.Types as SA
-import Foreign.ForeignPtr (plusForeignPtr)
+import qualified Data.ByteString.Internal as BSI
+import qualified Streamly.Internal.Data.Array.Storable.Foreign.Types as Arr
 import Foreign.ForeignPtr.Unsafe (unsafeForeignPtrToPtr)
-import GHC.Ptr (plusPtr)
--}
+import GHC.Ptr (minusPtr)
+
 -- define CURRYER_SHOW_BYTES 1
 #if CURRYER_SHOW_BYTES == 1
 import Debug.Trace
@@ -159,8 +159,7 @@ localHostAddr = (127,0,0,1)
 -- Each message is length-prefixed by a 32-bit unsigned length.
 envelopeP :: Parser IO Word8 Envelope
 envelopeP = do
-  let s = FL.toList
-      msgTypeP = (P.satisfy (== 0) *>
+  let msgTypeP = (P.satisfy (== 0) *>
                      (RequestMessage . fromIntegral <$> word32P)) `P.alt`
                  (P.satisfy (== 1) $> ResponseMessage) `P.alt`
                  (P.satisfy (== 2) $> TimeoutResponseMessage) `P.alt`
@@ -171,7 +170,7 @@ envelopeP = do
         if c == 0 then
           pure BS.empty
           else
-          BS.pack <$> P.takeEQ c s
+          fromArray <$> P.takeEQ c (Arr.writeN c)
   Envelope <$> fingerprintP <*> msgTypeP <*> uuidP <*> lenPrefixedByteStringP
 
 encodeEnvelope :: Envelope -> BS.ByteString
@@ -334,3 +333,10 @@ sendEnvelope envelope sockLock = do
 fingerprint :: Typeable a => a -> Fingerprint
 fingerprint = typeRepFingerprint . typeOf
 
+fromArray :: Arr.Array Word8 -> BSI.ByteString
+fromArray Arr.Array {..}
+    | aLen == 0 = mempty
+    | otherwise = BSI.PS aStart 0 aLen
+  where
+    aStartPtr = unsafeForeignPtrToPtr aStart
+    aLen = aEnd `minusPtr` aStartPtr
