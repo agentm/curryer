@@ -1,4 +1,4 @@
-{-# LANGUAGE RankNTypes, ScopedTypeVariables, GADTs #-}
+{-# LANGUAGE RankNTypes, ScopedTypeVariables, GADTs, TypeApplications #-}
 module Network.RPC.Curryer.Client where
 import Network.RPC.Curryer.Server
 import Network.Socket as Socket
@@ -93,7 +93,7 @@ clientEnvelopeHandler _ _ syncMap (Envelope _ ResponseMessage msgId binaryMessag
 clientEnvelopeHandler _ _ syncMap (Envelope _ TimeoutResponseMessage msgId _) =
   consumeResponse msgId syncMap (Left TimeoutError)
 clientEnvelopeHandler _ _ syncMap (Envelope _ ExceptionResponseMessage msgId excPayload) = 
-  case deserialise excPayload of
+  case msgDeserialise excPayload of
         Left err -> error ("failed to deserialise exception string" <> show err)
         Right excStr ->
           consumeResponse msgId syncMap (Left (ExceptionError excStr))
@@ -112,7 +112,7 @@ callTimeout mTimeout conn msg = do
         Just tm | tm < 0 -> 0
         Just tm -> fromIntegral tm
         
-      envelope = Envelope fprint (RequestMessage timeoutms) requestID (serialise msg)
+      envelope = Envelope fprint (RequestMessage timeoutms) requestID (msgSerialise msg)
       fprint = fingerprint msg
   -- setup mvar to wait for response
   responseMVar <- newEmptyMVar
@@ -132,16 +132,15 @@ callTimeout mTimeout conn msg = do
     Just (Left exc) ->
       pure (Left exc)
     Just (Right binmsg) ->
-      --TODO use decoder instead
-      case deserialise binmsg of
+      case msgDeserialise binmsg of
         Left err -> error ("deserialise client error " <> show err)
-        Right m -> pure (Right m)
+        Right v -> pure (Right v)
 
 -- | Call a remote function but do not expect a response from the server.
 asyncCall :: Serialise request => Connection -> request -> IO (Either ConnectionError ())
 asyncCall conn msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
-  let envelope = Envelope fprint (RequestMessage 0) requestID (serialise msg)
+  let envelope = Envelope fprint (RequestMessage 0) requestID (msgSerialise msg)
       fprint = fingerprint msg
   sendEnvelope envelope (_conn_sockLock conn)
   pure (Right ())

@@ -1,5 +1,5 @@
 Name: curryer-rpc
-Version: 0.1
+Version: 0.2
 License: PublicDomain
 Build-Type: Simple
 Homepage: https://github.com/agentm/curryer
@@ -21,7 +21,7 @@ Library
         Build-Depends: base >= 4.12 && < 4.15
                      , winery
                      , bytestring
-                     , streamly >= 0.7.2
+                     , streamly >= 0.8.0
                      , network
                      , exceptions
                      , async
@@ -36,7 +36,7 @@ Library
                      , stm
         Hs-Source-Dirs: ./src
         Default-Language: Haskell2010
-        ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports        
+        ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports
         Exposed-Modules:
                         Network.RPC.Curryer.Server
                         Network.RPC.Curryer.Client

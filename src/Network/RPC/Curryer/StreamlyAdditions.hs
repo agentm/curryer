@@ -3,12 +3,13 @@ import Control.Monad.IO.Class
 import Network.Socket (Socket, PortNumber, SocketOption, SockAddr(..), maxListenQueue, Family(..), SocketType(..), defaultProtocol, tupleToHostAddress, withSocketsDo, socket, setSocketOption, bind, getSocketName)
 import qualified Network.Socket as Net
 import Control.Exception (onException)
+import Control.Monad.Catch (finally)
 import Control.Concurrent.MVar
 import Data.Word
 import qualified Streamly.Internal.Data.Unfold as UF
 import Streamly.Network.Socket hiding (accept)
 import qualified Streamly.Internal.Data.Stream.StreamD.Type as D
-import Streamly.Internal.Data.Unfold.Types (Unfold(..))
+import Streamly.Internal.Data.Unfold.Type (Unfold(..))
 
 acceptOnAddrWith
     :: MonadIO m
@@ -64,3 +65,5 @@ listenTuples mSockLock = Unfold step inject
         r <- liftIO (Net.accept listener `onException` Net.close listener)
         return $ D.Yield r listener
 
+handleWithM :: (Socket -> IO ()) -> Socket -> IO ()
+handleWithM f sk = finally (f sk) (Net.close sk)
