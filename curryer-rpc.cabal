@@ -1,5 +1,5 @@
 Name: curryer-rpc
-Version: 0.2
+Version: 0.2.1
 License: PublicDomain
 Build-Type: Simple
 Homepage: https://github.com/agentm/curryer
@@ -11,7 +11,7 @@ Maintainer: agentm@themactionfaction.com
 Cabal-Version: >= 1.10
 Synopsis: Fast, Haskell RPC
 Description: Haskell-to-Haskell RPC using Winery serialization.
-Extra-Source-Files: Changelog.markdown README.markdown cabal.project
+Extra-Source-Files: Changelog.markdown README.markdown
 
 Source-Repository head
     Type: git
@@ -21,7 +21,7 @@ Library
         Build-Depends: base >= 4.12 && < 4.15
                      , winery
                      , bytestring
-                     , streamly >= 0.8.0
+                     , streamly >= 0.8.1
                      , network
                      , exceptions
                      , async
