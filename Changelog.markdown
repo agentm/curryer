@@ -1,3 +1,7 @@
+# v0.2.1 (2021-12-28)
+
+* bump up streamly dependency to 0.8.1 due to streamly internals API change since 0.8.0
+
 # v0.2 (2021-12-13)
 
 * update for streamly 0.8.0 (we are no longer pegged to a pre-release streamly)
