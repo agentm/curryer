@@ -1,3 +1,7 @@
+# v0.2.2 (2022-08-17)
+
+* add support for GHC 9.2
+	
 # v0.2.1 (2021-12-28)
 
 * bump up streamly dependency to 0.8.1 due to streamly internals API change since 0.8.0
