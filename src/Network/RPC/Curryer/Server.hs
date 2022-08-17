@@ -91,7 +91,10 @@ data Envelope = Envelope {
 
 type TimeoutMicroseconds = Int
 
+#if MIN_VERSION_base(4,15,0)
+#else
 deriving instance Generic Fingerprint
+#endif
 deriving via WineryVariant Fingerprint instance Serialise Fingerprint
 
 -- | Internal type used to mark envelope types.
