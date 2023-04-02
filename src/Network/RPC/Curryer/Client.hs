@@ -1,4 +1,4 @@
-{-# LANGUAGE RankNTypes, ScopedTypeVariables, GADTs, TypeApplications #-}
+{-# LANGUAGE RankNTypes, ScopedTypeVariables, GADTs #-}
 module Network.RPC.Curryer.Client where
 import Network.RPC.Curryer.Server
 import Network.Socket as Socket

@@ -1,4 +1,4 @@
-{-# LANGUAGE DerivingVia, DeriveGeneric, TypeApplications, ExistentialQuantification #-}
+{-# LANGUAGE DerivingVia, DeriveGeneric, TypeApplications, ExistentialQuantification, ScopedTypeVariables #-}
 module Curryer.Test.Basic where
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -19,15 +19,16 @@ import Network.RPC.Curryer.Client
 -- TODO: add test for nested calls
 
 testTree :: TestTree
-testTree = testGroup "basic" [testCase "simple" testSimpleCall
-                             ,testCase "client async" testAsyncServerCall
-                             ,testCase "server async" testAsyncClientCall
-                             ,testCase "client sync timeout" testSyncClientCallTimeout
-                             ,testCase "server-side exception" testSyncException
-                             ,testCase "multi-threaded client" testMultithreadedClient
-                             ,testCase "server state" testServerState
-                             ,testCase "request handler throws timeout" testRequestHandlerThrowTimeout
-                             ]
+testTree = testGroup "basic" [
+  testCase "simple request and response" testSimpleCall
+  ,testCase "client async" testAsyncServerCall
+  ,testCase "server async" testAsyncClientCall
+  ,testCase "client sync timeout" testSyncClientCallTimeout
+  ,testCase "server-side exception" testSyncException
+  ,testCase "multi-threaded client" testMultithreadedClient
+  ,testCase "server state" testServerState
+  ,testCase "request handler throws timeout" testRequestHandlerThrowTimeout
+  ]
 
 
 data AddTwoNumbersReq = AddTwoNumbersReq Int Int
@@ -112,7 +113,7 @@ testAsyncServerCall = do
   receivedAsyncMessageVar <- newEmptyMVar
   let clientAsyncHandlers =
         [ClientAsyncRequestHandler (\(AsyncHelloReq s) ->
-                                       putMVar receivedAsyncMessageVar s)]
+                                        putMVar receivedAsyncMessageVar s)]
   server <- async (serve (testServerRequestHandlers (Just receivedAsyncMessageVar)) emptyServerState localHostAddr 0 (Just portReadyVar))
   (SockAddrInet port _) <- takeMVar portReadyVar
   conn <- connect clientAsyncHandlers localHostAddr port
@@ -225,4 +226,3 @@ testRequestHandlerThrowTimeout = do
   assertEqual "handler timeout exception" (Left TimeoutError) ret
   close conn
   cancel server
-  

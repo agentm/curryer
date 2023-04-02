@@ -1,12 +1,15 @@
-{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, CPP, ExistentialQuantification, StandaloneDeriving, GADTs #-}
+{-# LANGUAGE DerivingVia, DeriveGeneric, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, OverloadedStrings, GeneralizedNewtypeDeriving, CPP, ExistentialQuantification, StandaloneDeriving, GADTs, UnboxedTuples, BangPatterns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
-import qualified Streamly.Prelude as S
+import qualified Streamly.Data.Stream.Prelude as SP
+import Streamly.Data.Stream as Stream hiding (foldr)
+import Streamly.Internal.Data.Stream.Concurrent as Stream
+import Streamly.Internal.Serialize.FromBytes (word32be)
 import Streamly.Network.Socket as SSock
 import Network.Socket as Socket
 import Network.Socket.ByteString as Socket
-import Streamly.Internal.Data.Parser as P hiding (concatMap)
+import Streamly.Data.Parser as P
 import Codec.Winery
 import Codec.Winery.Internal (varInt, decodeVarInt, getBytes)
 import GHC.Generics
@@ -20,7 +23,9 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.FastBuilder as BB
 import Streamly.Data.Fold as FL hiding (foldr)
-import qualified Streamly.Internal.Data.Stream.IsStream as P
+--import qualified Streamly.Internal.Data.Stream.IsStream as P
+import qualified Streamly.Data.Stream.Prelude as P
+import qualified Streamly.External.ByteString as StreamlyBS
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
 import qualified Data.UUID.V4 as UUIDBase
@@ -32,16 +37,11 @@ import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 import Data.Hashable
 import System.Timeout
 import qualified Network.ByteOrder as BO
+import qualified Streamly.Internal.Data.Array.Type as Arr
 
 
--- for toArrayS conversion
-import qualified Data.ByteString.Internal as BSI
-import qualified Streamly.Internal.Data.Array.Foreign.Type as Arr
-import qualified Streamly.Internal.Data.Array.Foreign.Mut.Type as ArrT
-import GHC.ForeignPtr (ForeignPtr(ForeignPtr))
-import GHC.Ptr (minusPtr, Ptr(..))
-
---define CURRYER_SHOW_BYTES 1
+#define CURRYER_SHOW_BYTES 0
+#define CURRYER_PASS_SCHEMA 0
 
 #if CURRYER_SHOW_BYTES == 1
 import Debug.Trace
@@ -56,10 +56,18 @@ traceBytes _ _ = pure ()
 
 -- a level of indirection to be able to switch between serialising with and without the winery schema
 msgSerialise :: Serialise a => a -> BS.ByteString
+#if CURRYER_PASS_SCHEMA == 1
+msgSerialise = serialise
+#else
 msgSerialise = serialiseOnly
+#endif
 
 msgDeserialise :: forall s. Serialise s => BS.ByteString -> Either WineryException s
+#if CURRYER_PASS_SCHEMA == 1
+msgDeserialise = deserialise
+#else
 msgDeserialise = deserialiseOnly
+#endif
 
 data Locking a = Locking (MVar ()) a
 
@@ -162,11 +170,14 @@ instance Exception TimeoutException
 
 type HostAddr = (Word8, Word8, Word8, Word8)
 
+type BParser a = Parser Word8 IO a
+
 allHostAddrs,localHostAddr :: HostAddr
 allHostAddrs = (0,0,0,0)
 localHostAddr = (127,0,0,1)
 
-msgTypeP :: Parser IO Word8 MessageType
+
+msgTypeP :: BParser MessageType
 msgTypeP = (P.satisfy (== 0) *>
              (RequestMessage . fromIntegral <$> word32P)) <|>
            (P.satisfy (== 1) $> ResponseMessage) <|>
@@ -174,16 +185,20 @@ msgTypeP = (P.satisfy (== 0) *>
            (P.satisfy (== 3) $> ExceptionResponseMessage)
                  
 -- Each message is length-prefixed by a 32-bit unsigned length.
-envelopeP :: Parser IO Word8 Envelope
+envelopeP :: BParser Envelope
 envelopeP = do
   let lenPrefixedByteStringP = do
-        c <- fromIntegral <$> word32P
+        c <- fromIntegral <$> word32be
         --streamly can't handle takeEQ 0, so add special handling
 --        traceShowM ("envelopeP payload byteCount"::String, c)
         if c == 0 then
-          pure BS.empty
-          else
-          fromArray <$> P.takeEQ c (Arr.writeN c)
+          pure mempty
+          else do
+          ps <- P.takeEQ c (Arr.writeN c)
+--          traceShowM ("envelopeP read bytes", c)
+          let !bs = StreamlyBS.fromArray ps
+--          traceShowM ("unoptimized bs")
+          pure bs 
   Envelope <$> fingerprintP <*> msgTypeP <*> uuidP <*> lenPrefixedByteStringP
 
 --overhead is fingerprint (16 bytes), msgType (1+4 optional bytes for request message), msgId (4 bytes), uuid (16 bytes) = 41 bytes per request message, 37 bytes for all others
@@ -212,18 +227,18 @@ encodeEnvelope (Envelope (Fingerprint fp1 fp2) msgType msgId bs) =
     
     
 
-fingerprintP :: Parser IO Word8 Fingerprint
+fingerprintP :: BParser Fingerprint
 fingerprintP =
   Fingerprint <$> word64P <*> word64P
 
-word64P :: Parser IO Word8 Word64
+word64P :: BParser Word64
 word64P = do
   let s = FL.toList
   b <- P.takeEQ 8 s
   pure (BO.word64 (BS.pack b))
 
 --parse a 32-bit integer from network byte order
-word32P :: Parser IO Word8 Word32
+word32P :: BParser Word32
 word32P = do
   let s = FL.toList
   w4x8 <- P.takeEQ 4 s
@@ -231,7 +246,7 @@ word32P = do
   pure (BO.word32 (BS.pack w4x8))
 
 -- uuid is encode as 4 32-bit words because of its convenient 32-bit tuple encoding
-uuidP :: Parser IO Word8 UUID
+uuidP :: BParser UUID
 uuidP = do
   u1 <- word32P
   u2 <- word32P
@@ -254,19 +269,19 @@ serve ::
          Maybe (MVar SockAddr) ->
          IO Bool
 serve userMsgHandlers serverState hostaddr port mSockLock = do
-  let
-      handleSock sock = do
+  let handleSock sock = do
         lockingSocket <- newLock sock
         drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandlers serverState)
-
-  S.fromSerial (S.unfold (SA.acceptOnAddrWith [(ReuseAddr,1)] mSockLock) (hostaddr, port)) & S.fromParallel . S.mapM (forSocketM handleSock) & S.drain
+  Stream.unfold (SA.acceptorOnAddr [(ReuseAddr, 1)] mSockLock) (hostaddr, port) 
+   & Stream.parMapM id handleSock
+   & Stream.fold FL.drain
   pure True
 
 openEnvelope :: forall s. (Serialise s, Typeable s) => Envelope -> Maybe s
 openEnvelope (Envelope eprint _ _ bytes) =
   if eprint == fingerprint (undefined :: s) then
     case msgDeserialise bytes of
-      Left _e -> {-traceShow ("openEnv error"::String, e) $-} Nothing
+      Left _e -> {-traceShow ("openEnv error"::String, _e)-} Nothing
       Right decoded -> Just decoded
     else
     Nothing
@@ -304,7 +319,7 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
         if timeoutms == 0 then
           (Just <$> m) `catch` timeoutExcHandler
         else
-          (timeout (fromIntegral timeoutms) m) `catch` timeoutExcHandler
+          timeout (fromIntegral timeoutms) m `catch` timeoutExcHandler
       --allow server-side function to throw TimeoutError which is caught here and becomes TimeoutError value
       timeoutExcHandler :: TimeoutException -> IO (Maybe b)
       timeoutExcHandler _ = pure Nothing
@@ -347,11 +362,11 @@ type EnvelopeHandler = Envelope -> IO ()
 
 drainSocketMessages :: Socket -> EnvelopeHandler -> IO ()
 drainSocketMessages sock envelopeHandler = do
-  S.unfold SSock.read sock
+  SP.unfold SSock.reader sock
   & P.parseMany envelopeP
-  & S.mapM envelopeHandler
-  & S.fromAsync
-  & S.drain
+  & SP.catRights
+  & SP.parMapM (SP.ordered False) envelopeHandler
+  & SP.fold FL.drain
 
 --send length-tagged bytestring, perhaps should be in network byte order?
 sendEnvelope :: Envelope -> Locking Socket -> IO ()
@@ -361,21 +376,12 @@ sendEnvelope envelope sockLock = do
   withLock sockLock $ \socket' -> do
     {-traceShowM ("sendEnvelope"::String,
                 ("type"::String, envMessageType envelope),
-                socket', ("env len"::String, BS.length envelopebytes),
-                "payloadbytes"::String, envPayload envelope)-}
+                socket',
+                ("envelope len out"::String, BS.length envelopebytes),
+                "payloadbytes"::String, envPayload envelope
+               )-}
     Socket.sendAll socket' envelopebytes
---  traceBytes "sendEnvelope" envelopebytes
+  traceBytes "sendEnvelope" envelopebytes
 
 fingerprint :: Typeable a => a -> Fingerprint
 fingerprint = typeRepFingerprint . typeOf
-
-fromArray :: Arr.Array Word8 -> BSI.ByteString
-fromArray arr 
-    | aLen == 0 = mempty
-    | otherwise = {-traceShow ("bsi len"::String, aLen, Arr.byteLength arr) $-} BSI.PS aStartFPtr 0 aLen
-  where
-    aStart = Arr.arrStart arr
-    aEnd = Arr.aEnd arr
-    aStartFPtr = case Arr.arrStart arr of
-      Ptr addr -> ForeignPtr addr (ArrT.arrayToFptrContents (Arr.arrContents arr))
-    aLen = aEnd `minusPtr` aStart

@@ -1,3 +1,7 @@
+# v0.3.0 (2023-04-01)
+
+* require streamly 0.9.0+
+
 # v0.2.2 (2022-08-17)
 
 * add support for GHC 9.2
