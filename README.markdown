@@ -17,7 +17,7 @@ Curryer is inspired by the now unmaintained [distributed-process](https://hackag
 
 ## Code Example
 
-[Server](https://github.com/agentm/curryer/examples/SimpleKeyValueServer.hs):
+[Server](examples/SimpleKeyValueServer.hs):
 
 ```haskell
 data SetKey = SetKey String String
@@ -41,7 +41,7 @@ kvRequestHandlers = [ RequestHandler $ \state (SetKey k v) ->
                     ]
 ```
 
-[Client](https://github.com/agentm/curryer/examples/SimpleKeyValueClient.hs):
+[Client](examples/SimpleKeyValueClient.hs):
 
 ```haskell
 data SetKey = SetKey String String
