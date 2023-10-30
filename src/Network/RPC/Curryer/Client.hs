@@ -35,6 +35,7 @@ connect ::
   IO Connection
 connect asyncHandlers hostAddr portNum = do
   sock <- TCP.connect hostAddr portNum
+  Socket.setSocketOption sock NoDelay 1
   syncmap <- STMMap.newIO
   asyncThread <- async (clientAsync sock syncmap asyncHandlers)
   sockLock <- newLock sock

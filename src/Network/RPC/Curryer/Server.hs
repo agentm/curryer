@@ -272,7 +272,7 @@ serve userMsgHandlers serverState hostaddr port mSockLock = do
   let handleSock sock = do
         lockingSocket <- newLock sock
         drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandlers serverState)
-  Stream.unfold (SA.acceptorOnAddr [(ReuseAddr, 1)] mSockLock) (hostaddr, port) 
+  Stream.unfold (SA.acceptorOnAddr [(ReuseAddr, 1), (NoDelay, 1)] mSockLock) (hostaddr, port) 
    & Stream.parMapM id handleSock
    & Stream.fold FL.drain
   pure True
