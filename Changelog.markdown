@@ -1,3 +1,7 @@
+# v0.3.1 (2023-10-30)
+
+* enable TCP_NODELAY to reduce intermessage latency
+
 # v0.3.0 (2023-04-01)
 
 * require streamly 0.9.0+
