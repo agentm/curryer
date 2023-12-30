@@ -13,7 +13,7 @@ Curryer is inspired by the now unmaintained [distributed-process](https://hackag
 
 ## Requirements
 
-* GHC 8.6+
+* GHC 9.0+
 
 ## Code Example
 

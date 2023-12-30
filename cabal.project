@@ -1,0 +1,4 @@
+packages: .
+
+allow-newer: fast-builder:base, streamly-bytestring
+

@@ -1,3 +1,7 @@
+# v0.3.2 (2023-12-30)
+
+* enable support for GHC 9.4
+
 # v0.3.1 (2023-10-30)
 
 * enable TCP_NODELAY to reduce intermessage latency
