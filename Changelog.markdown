@@ -1,3 +1,7 @@
+# v0.3.3 (2024-01-07)
+
+* use streamly 0.10.0 and streamly-core 0.2.0
+
 # v0.3.2 (2023-12-30)
 
 * enable support for GHC 9.4
