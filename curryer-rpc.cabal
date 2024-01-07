@@ -1,5 +1,5 @@
 Name: curryer-rpc
-Version: 0.3.2
+Version: 0.3.3
 License: PublicDomain
 Build-Type: Simple
 Homepage: https://github.com/agentm/curryer
@@ -21,9 +21,9 @@ Library
         Build-Depends: base >= 4.12 && < 4.19
                      , winery
                      , bytestring
-                     , streamly >= 0.9.0
-                     , streamly-core >= 0.1.0
-                     , streamly-bytestring >= 0.2.0
+                     , streamly >= 0.10.0
+                     , streamly-core >= 0.2.0
+                     , streamly-bytestring >= 0.2.1
                      , network
                      , exceptions
                      , async
@@ -58,9 +58,9 @@ Test-Suite test
                , network
                , async
                , stm
-               , streamly-core
+               , streamly-core >= 0.1.0
                , bytestring
-               , streamly-bytestring
+               , streamly-bytestring >= 0.2.1
   other-modules: Curryer.Test.Basic
 
 Benchmark perf

@@ -4,8 +4,8 @@
 module Network.RPC.Curryer.Server where
 import qualified Streamly.Data.Stream.Prelude as SP
 import Streamly.Data.Stream as Stream hiding (foldr)
-import Streamly.Internal.Data.Stream.Concurrent as Stream
-import Streamly.Internal.Serialize.FromBytes (word32be)
+import Streamly.Data.Stream.Prelude as Stream hiding (foldr)
+import Streamly.Internal.Data.Binary.Parser (word32be)
 import Streamly.Network.Socket as SSock
 import Network.Socket as Socket
 import Network.Socket.ByteString as Socket
@@ -37,7 +37,7 @@ import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 import Data.Hashable
 import System.Timeout
 import qualified Network.ByteOrder as BO
-import qualified Streamly.Internal.Data.Array.Type as Arr
+import qualified Streamly.Data.Array as Arr
 
 
 #define CURRYER_SHOW_BYTES 0
