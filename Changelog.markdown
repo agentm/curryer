@@ -1,3 +1,7 @@
+# v0.3.5 (2024-01-12)
+
+* disable extraneous debug logging
+
 # v0.3.4 (2024-01-12)
 
 * revert to streamly 0.9.0 due to corruption bug in streamly-0.10.0

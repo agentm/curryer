@@ -47,8 +47,8 @@ import System.Timeout
 import qualified Network.ByteOrder as BO
 
 
-#define CURRYER_SHOW_BYTES 1
-#define CURRYER_PASS_SCHEMA 1
+#define CURRYER_SHOW_BYTES 0
+#define CURRYER_PASS_SCHEMA 0
 
 #if CURRYER_SHOW_BYTES == 1
 import Debug.Trace
