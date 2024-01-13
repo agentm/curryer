@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 module Network.RPC.Curryer.StreamlyAdditions where
 import Control.Monad.IO.Class
 import Network.Socket (Socket, PortNumber, SocketOption, SockAddr(..), maxListenQueue, Family(..), SocketType(..), defaultProtocol, tupleToHostAddress, withSocketsDo, socket, setSocketOption, bind, getSocketName)
@@ -7,9 +8,13 @@ import Control.Concurrent.MVar
 import Data.Word
 import qualified Streamly.Internal.Data.Unfold as UF
 import Streamly.Network.Socket hiding (acceptor)
---import qualified Streamly.Internal.Data.Stream.StreamD as D
+#if MIN_VERSION_streamly(0,9,0)
+import qualified Streamly.Internal.Data.Stream.StreamD as D
+import Streamly.Internal.Data.Unfold.Type (Unfold(..))
+#else
 import qualified Streamly.Internal.Data.Stream as D
 import Streamly.Internal.Data.Unfold (Unfold(..))
+#endif
 
 acceptorOnAddr
     :: MonadIO m

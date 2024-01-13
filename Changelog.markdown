@@ -1,3 +1,7 @@
+# v0.3.4 (2024-01-12)
+
+* revert to streamly 0.9.0 due to corruption bug in streamly-0.10.0
+
 # v0.3.3 (2024-01-07)
 
 * use streamly 0.10.0 and streamly-core 0.2.0

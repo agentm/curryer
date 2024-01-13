@@ -12,6 +12,7 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Exception
 import Data.List
+import Data.Text (Text, pack)
 
 import Network.RPC.Curryer.Server
 import Network.RPC.Curryer.Client
@@ -21,6 +22,7 @@ import Network.RPC.Curryer.Client
 testTree :: TestTree
 testTree = testGroup "basic" [
   testCase "simple request and response" testSimpleCall
+  ,testCase "complex ADT" testComplexADT
   ,testCase "client async" testAsyncServerCall
   ,testCase "server async" testAsyncClientCall
   ,testCase "client sync timeout" testSyncClientCallTimeout
@@ -68,6 +70,10 @@ data ThrowTimeout = ThrowTimeout
   deriving (Generic, Show)
   deriving Serialise via WineryVariant ThrowTimeout
 
+data RoundtripSomeADTReq = RoundtripSomeADTReq SomeADT
+  deriving (Generic, Show)
+  deriving Serialise via WineryVariant RoundtripSomeADTReq
+
 testServerRequestHandlers :: Maybe (MVar String) -> RequestHandlers ()
 testServerRequestHandlers mAsyncMVar =
     [ RequestHandler $ \_ (AddTwoNumbersReq x y) -> pure (x + y)
@@ -88,6 +94,7 @@ testServerRequestHandlers mAsyncMVar =
     , RequestHandler $ \_ ThrowServerSideExceptionReq -> do
         _ <- error "test server exception"
         pure ()
+    , RequestHandler $ \_ (RoundtripSomeADTReq s) -> pure s
                ]
       
 -- test a simple client-to-server round-trip function execution
@@ -224,5 +231,25 @@ testRequestHandlerThrowTimeout = do
   conn <- connect [] localHostAddr port
   ret <- call @_ @Int conn ThrowTimeout
   assertEqual "handler timeout exception" (Left TimeoutError) ret
+  close conn
+  cancel server
+
+data SomeADT = SomeTextCon Text SomeADT
+             | SomeIntCon Integer SomeADT
+             | EndCon
+  deriving (Generic, Show, Eq)
+  deriving Serialise via WineryVariant SomeADT
+
+testComplexADT :: Assertion
+testComplexADT = do
+  let arg = SomeTextCon (pack "sduofhsldkfsldkfjsldkfjsdlkfjsdlfksdjlfksjdflksdjflksdjfjlsdjlfjdklskfjlsdlfk") (SomeIntCon 0 (EndCon))
+  readyVar <- newEmptyMVar
+  server <- async (serve (testServerRequestHandlers Nothing) emptyServerState localHostAddr 0 (Just readyVar))
+  --wait for server to be ready
+  (SockAddrInet port _) <- takeMVar readyVar
+  conn <- connect [] localHostAddr port
+  replicateM_ 5 $ do --make five AddTwo calls to shake out parallelism bugs
+    res <- call conn (RoundtripSomeADTReq arg)
+    assertEqual "complex ADT" (Right arg) res
   close conn
   cancel server

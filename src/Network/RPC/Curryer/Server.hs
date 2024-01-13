@@ -3,9 +3,17 @@
 {- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
 import qualified Streamly.Data.Stream.Prelude as SP
-import Streamly.Data.Stream as Stream hiding (foldr)
+#if MIN_VERSION_streamly(0,9,0)
+import Streamly.Internal.Data.Stream.Concurrent as Stream
+import Streamly.Internal.Serialize.FromBytes (word32be)
+import qualified Streamly.Internal.Data.Array.Type as Arr
+#else
+import qualified Streamly.Data.Array as Arr
 import Streamly.Data.Stream.Prelude as Stream hiding (foldr)
 import Streamly.Internal.Data.Binary.Parser (word32be)
+#endif
+import Streamly.Data.Stream as Stream hiding (foldr)
+
 import Streamly.Network.Socket as SSock
 import Network.Socket as Socket
 import Network.Socket.ByteString as Socket
@@ -37,11 +45,10 @@ import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 import Data.Hashable
 import System.Timeout
 import qualified Network.ByteOrder as BO
-import qualified Streamly.Data.Array as Arr
 
 
-#define CURRYER_SHOW_BYTES 0
-#define CURRYER_PASS_SCHEMA 0
+#define CURRYER_SHOW_BYTES 1
+#define CURRYER_PASS_SCHEMA 1
 
 #if CURRYER_SHOW_BYTES == 1
 import Debug.Trace
