@@ -8,13 +8,8 @@ import Control.Concurrent.MVar
 import Data.Word
 import qualified Streamly.Internal.Data.Unfold as UF
 import Streamly.Network.Socket hiding (acceptor)
-#if MIN_VERSION_streamly(0,9,0)
-import qualified Streamly.Internal.Data.Stream.StreamD as D
-import Streamly.Internal.Data.Unfold.Type (Unfold(..))
-#else
 import qualified Streamly.Internal.Data.Stream as D
 import Streamly.Internal.Data.Unfold (Unfold(..))
-#endif
 
 acceptorOnAddr
     :: MonadIO m

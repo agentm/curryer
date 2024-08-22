@@ -1,3 +1,8 @@
+# v0.3.6 (2024-07-20)
+
+* update to streamly 0.10.1
+* update to streamly-bytestring 0.2.2 which includes a critical fix related to pinned arrays used within streamly
+
 # v0.3.5 (2024-01-12)
 
 * disable extraneous debug logging

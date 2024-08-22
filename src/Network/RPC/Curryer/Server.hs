@@ -3,16 +3,8 @@
 {- HLINT ignore "Use lambda-case" -}
 module Network.RPC.Curryer.Server where
 import qualified Streamly.Data.Stream.Prelude as SP
-#if MIN_VERSION_streamly(0,9,0)
-import Streamly.Internal.Data.Stream.Concurrent as Stream
-import Streamly.Internal.Serialize.FromBytes (word32be)
-import qualified Streamly.Internal.Data.Array.Type as Arr
-#else
-import qualified Streamly.Data.Array as Arr
-import Streamly.Data.Stream.Prelude as Stream hiding (foldr)
-import Streamly.Internal.Data.Binary.Parser (word32be)
-#endif
 import Streamly.Data.Stream as Stream hiding (foldr)
+import Streamly.Internal.Data.Array (pinnedCreateOf)
 
 import Streamly.Network.Socket as SSock
 import Network.Socket as Socket
@@ -34,6 +26,8 @@ import Streamly.Data.Fold as FL hiding (foldr)
 --import qualified Streamly.Internal.Data.Stream.IsStream as P
 import qualified Streamly.Data.Stream.Prelude as P
 import qualified Streamly.External.ByteString as StreamlyBS
+import Streamly.Data.Stream.Prelude as Stream hiding (foldr)
+import Streamly.Internal.Data.Binary.Parser (word32be)
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
 import qualified Data.UUID.V4 as UUIDBase
@@ -201,7 +195,7 @@ envelopeP = do
         if c == 0 then
           pure mempty
           else do
-          ps <- P.takeEQ c (Arr.writeN c)
+          ps <- P.takeEQ c (pinnedCreateOf c)
 --          traceShowM ("envelopeP read bytes", c)
           let !bs = StreamlyBS.fromArray ps
 --          traceShowM ("unoptimized bs")
