@@ -153,7 +153,7 @@ jobs:
         run: |
           PKGDIR_curryer_rpc="$(find "$GITHUB_WORKSPACE/unpacked" -maxdepth 1 -type d -regex '.*/curryer-rpc-[0-9.]*')"
           echo "PKGDIR_curryer_rpc=${PKGDIR_curryer_rpc}" >> "$GITHUB_ENV"
-	  mv cabal.project cabal.project.local
+          mv cabal.project cabal.project.local
           rm -f cabal.project
           touch cabal.project
           touch cabal.project.local
