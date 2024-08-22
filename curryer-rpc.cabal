@@ -12,13 +12,14 @@ Cabal-Version: >= 1.10
 Synopsis: Fast, Haskell RPC
 Description: Haskell-to-Haskell RPC using Winery serialization.
 Extra-Source-Files: Changelog.markdown README.markdown
+Tested-With: GHC ==9.2.8 || ==9.4.8 || ==9.6.6 || ==9.8.2 || ==9.10.1
 
 Source-Repository head
     Type: git
     location: https://github.com/agentm/curryer
 
 Library
-        Build-Depends: base >= 4.12 && < 4.19
+        Build-Depends: base >= 4.12
                      , winery
                      , bytestring
                      , streamly == 0.10.1
