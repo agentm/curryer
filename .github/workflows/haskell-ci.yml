@@ -149,22 +149,6 @@ jobs:
         run: |
           mkdir -p unpacked
           find sdist -maxdepth 1 -type f -name '*.tar.gz' -exec tar -C $GITHUB_WORKSPACE/unpacked -xzvf {} \;
-      - name: generate cabal.project
-        run: |
-          PKGDIR_curryer_rpc="$(find "$GITHUB_WORKSPACE/unpacked" -maxdepth 1 -type d -regex '.*/curryer-rpc-[0-9.]*')"
-          echo "PKGDIR_curryer_rpc=${PKGDIR_curryer_rpc}" >> "$GITHUB_ENV"
-          mv cabal.project cabal.project.local
-          rm -f cabal.project
-          touch cabal.project
-          touch cabal.project.local
-          echo "packages: ${PKGDIR_curryer_rpc}" >> cabal.project
-          echo "package curryer-rpc" >> cabal.project
-          echo "    ghc-options: -Werror=missing-methods" >> cabal.project
-          cat >> cabal.project <<EOF
-          EOF
-          $HCPKG list --simple-output --names-only | perl -ne 'for (split /\s+/) { print "constraints: any.$_ installed\n" unless /^(curryer-rpc)$/; }' >> cabal.project.local
-          cat cabal.project
-          cat cabal.project.local
       - name: dump install plan
         run: |
           $CABAL v2-build $ARG_COMPILER $ARG_TESTS $ARG_BENCH --dry-run all
