@@ -135,7 +135,7 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
         with:
-          path: source
+          path: .
       - name: sdist
         run: |
           mkdir -p sdist
