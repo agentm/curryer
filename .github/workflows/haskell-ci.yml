@@ -136,14 +136,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: .
-      - name: sdist
-        run: |
-          mkdir -p sdist
-          $CABAL sdist all --output-dir $GITHUB_WORKSPACE/sdist
-      - name: unpack
-        run: |
-          mkdir -p unpacked
-          find sdist -maxdepth 1 -type f -name '*.tar.gz' -exec tar -C $GITHUB_WORKSPACE/unpacked -xzvf {} \;
       - name: dump install plan
         run: |
           $CABAL v2-build $ARG_COMPILER $ARG_TESTS $ARG_BENCH --dry-run all
