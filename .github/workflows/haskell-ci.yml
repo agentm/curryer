@@ -123,7 +123,7 @@ jobs:
       - name: update cabal index
         run: |
           $CABAL v2-update -v
-      - name: update cabal index: head.hackage
+      - name: update cabal index for head.hackage
         run: |
           $CABAL v2-update -v head.hackage.ghc.haskell.org
       - name: install cabal-plan
