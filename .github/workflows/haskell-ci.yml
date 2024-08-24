@@ -121,8 +121,9 @@ jobs:
           $CABAL --version || true
       - name: update cabal index
         run: |
-          git ls-files
           ls -al
+          pwd
+          git ls-files
           $CABAL v2-update -v -w $HC
       - name: install cabal-plan
         run: |
@@ -135,8 +136,6 @@ jobs:
           cabal-plan --version
       - name: checkout
         uses: actions/checkout@v4
-        with:
-          path: .
       - name: dump install plan
         run: |
           $CABAL v2-build $ARG_COMPILER $ARG_TESTS $ARG_BENCH --dry-run all
