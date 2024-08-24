@@ -121,6 +121,7 @@ jobs:
           $CABAL --version || true
       - name: update cabal index
         run: |
+          cat cabal.project  
           $CABAL v2-update -v -w $HC
       - name: install cabal-plan
         run: |
