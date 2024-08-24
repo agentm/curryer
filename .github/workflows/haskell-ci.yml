@@ -132,9 +132,6 @@ jobs:
         uses: actions/checkout@v4
       - name: update cabal index
         run: |
-          ls -al
-          pwd
-          git ls-files
           $CABAL v2-update -v -w $HC
       - name: dump install plan
         run: |
