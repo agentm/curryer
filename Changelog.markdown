@@ -1,3 +1,7 @@
+# v0.3.7 (2024-08-24)
+
+* enable building with GHC 9.6, 9.8, 9.10
+	
 # v0.3.6 (2024-07-20)
 
 * update to streamly 0.10.1
