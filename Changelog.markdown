@@ -1,3 +1,7 @@
+# v0.3.8 (2024-12-20)
+
+* add support for winery 1.5 but don't require it
+
 # v0.3.7 (2024-08-24)
 
 * enable building with GHC 9.6, 9.8, 9.10

@@ -67,7 +67,7 @@ msgDeserialise :: forall s. Serialise s => BS.ByteString -> Either WineryExcepti
 #if CURRYER_PASS_SCHEMA == 1
 msgDeserialise = deserialise
 #else
-msgDeserialise = deserialiseOnly
+msgDeserialise = deserialiseOnly'
 #endif
 
 data Locking a = Locking (MVar ()) a
@@ -288,8 +288,8 @@ openEnvelope (Envelope eprint _ _ bytes) =
     Nothing
 
 --use winery to decode only the data structure and skip the schema
-deserialiseOnly :: forall s. Serialise s => BS.ByteString -> Either WineryException s
-deserialiseOnly bytes = do
+deserialiseOnly' :: forall s. Serialise s => BS.ByteString -> Either WineryException s
+deserialiseOnly' bytes = do
   dec <- getDecoder (schema (Proxy :: Proxy s))
   pure (evalDecoder dec bytes)
 
