@@ -1,8 +1,9 @@
 {-# LANGUAGE RankNTypes, ScopedTypeVariables, GADTs #-}
 module Network.RPC.Curryer.Client where
 import Network.RPC.Curryer.Server
-import Network.Socket as Socket
-import qualified Streamly.Network.Inet.TCP as TCP
+import Network.Socket as Socket (Socket, PortNumber, SockAddr(..), close, Family(..), SocketType(..), tupleToHostAddress, tupleToHostAddress6)
+import Streamly.Internal.Network.Socket (SockSpec(..))
+import qualified Streamly.Internal.Network.Socket as SINS
 import Codec.Winery
 import Control.Concurrent.Async
 import qualified Data.UUID.V4 as UUIDBase
@@ -27,15 +28,57 @@ data ClientAsyncRequestHandler where
 
 type ClientAsyncRequestHandlers = [ClientAsyncRequestHandler]
 
+-- | Connect to a remote server over IPv4. Wraps `connect`.
+connectIPv4 ::
+  ClientAsyncRequestHandlers ->
+  HostAddressTuple ->
+  PortNumber ->
+  IO Connection
+connectIPv4 asyncHandlers hostaddr portnum =
+  connect asyncHandlers sockSpec sockAddr
+  where
+    sockSpec = SINS.SockSpec { sockFamily = AF_INET,
+                               sockType = Stream,
+                               sockProto = 0,
+                               sockOpts = [] }
+    sockAddr = SockAddrInet portnum (tupleToHostAddress hostaddr)
+
+-- | Connect to a remote server over IPv6. Wraps `connect`.
+connectIPv6 ::
+  ClientAsyncRequestHandlers ->
+  HostAddressTuple6 ->
+  PortNumber ->
+  IO Connection
+connectIPv6 asyncHandlers hostaddr portnum =
+  connect asyncHandlers sockSpec sockAddr  
+  where
+    sockSpec = SINS.SockSpec { sockFamily = AF_INET6,
+                               sockType = Stream,
+                               sockProto = 0,
+                               sockOpts = [] }
+    sockAddr = SockAddrInet6 portnum 0 (tupleToHostAddress6 hostaddr) 0
+
+connectUnixDomain ::
+  ClientAsyncRequestHandlers ->
+  FilePath ->
+  IO Connection
+connectUnixDomain asyncHandlers socketPath =
+  connect asyncHandlers sockSpec sockAddr
+  where
+    sockSpec = SINS.SockSpec { sockFamily = AF_UNIX,
+                               sockType = Stream,
+                               sockProto = 0,
+                               sockOpts = [] }
+    sockAddr = SockAddrUnix socketPath
+
 -- | Connects to a remote server with specific async callbacks registered.
 connect :: 
   ClientAsyncRequestHandlers ->
-  HostAddr ->
-  PortNumber ->
+  SINS.SockSpec ->
+  SockAddr ->
   IO Connection
-connect asyncHandlers hostAddr portNum = do
-  sock <- TCP.connect hostAddr portNum
-  Socket.setSocketOption sock NoDelay 1
+connect asyncHandlers sockSpec sockAddr = do
+  sock <- SINS.connect sockSpec sockAddr
   syncmap <- STMMap.newIO
   asyncThread <- async (clientAsync sock syncmap asyncHandlers)
   sockLock <- newLock sock
@@ -145,3 +188,4 @@ asyncCall conn msg = do
       fprint = fingerprint msg
   sendEnvelope envelope (_conn_sockLock conn)
   pure (Right ())
+

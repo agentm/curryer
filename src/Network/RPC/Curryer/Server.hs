@@ -169,13 +169,17 @@ data TimeoutException = TimeoutException
 
 instance Exception TimeoutException  
 
-type HostAddr = (Word8, Word8, Word8, Word8)
-
 type BParser a = Parser Word8 IO a
 
-allHostAddrs,localHostAddr :: HostAddr
+type HostAddressTuple = (Word8, Word8, Word8, Word8)
+type HostAddressTuple6 = (Word16, Word16, Word16, Word16, Word16, Word16, Word16, Word16)
+                        
+allHostAddrs,localHostAddr :: HostAddressTuple
 allHostAddrs = (0,0,0,0)
 localHostAddr = (127,0,0,1)
+
+localHostAddr6 :: HostAddressTuple6
+localHostAddr6 = (0,0,0,0,0,0,0,1)
 
 
 msgTypeP :: BParser MessageType
@@ -261,19 +265,59 @@ type NewConnectionHandler msg = IO (Maybe msg)
 
 type NewMessageHandler req resp = req -> IO resp
 
+defaultSocketOptions :: [(SocketOption, Int)]
+defaultSocketOptions = [(ReuseAddr, 1), (NoDelay, 1)]
+
+-- | Listen for new connections and handle requests on an IPv4 address. Wraps `serve1.
+serveIPv4 :: RequestHandlers s -> s -> HostAddressTuple -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
+serveIPv4 handlers state hostaddr port mSockLock =
+  serve handlers state sockSpec sockAddr mSockLock
+  where
+    sockAddr = SockAddrInet port (tupleToHostAddress hostaddr)
+    sockSpec = SockSpec { sockFamily = AF_INET,
+                          sockType = Stream,
+                          sockProto = 0,
+                          sockOpts = defaultSocketOptions
+                        }
+
+-- | Listen for IPv6 RPC requests. Wraps `serve`.
+serveIPv6 :: RequestHandlers s -> s -> HostAddressTuple6 -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
+serveIPv6 handlers state hostaddr port mSockLock =
+  serve handlers state sockSpec sockAddr mSockLock
+  where
+    flowInfo = 0
+    scopeInfo = 0
+    sockAddr = SockAddrInet6 port flowInfo (tupleToHostAddress6 hostaddr) scopeInfo
+    sockSpec = SockSpec { sockFamily = AF_INET6,
+                          sockType = Stream,
+                          sockProto = 0,
+                          sockOpts = defaultSocketOptions
+                          }
+
+-- | Listen for Unix domain socket RPC requests. Wraps `serve`.
+serveUnixDomain :: RequestHandlers s -> s -> FilePath -> Maybe (MVar SockAddr) -> IO Bool
+serveUnixDomain handlers state socketPath mSockLock =
+  serve handlers state sockSpec sockAddr mSockLock
+  where
+    sockSpec = SockSpec { sockFamily = AF_UNIX,
+                          sockType = Stream,
+                          sockProto = 0,
+                          sockOpts = [] }
+    sockAddr = SockAddrUnix socketPath
+  
 -- | Listen for new connections and handle requests which are passed the server state 's'. The MVar SockAddr can be be optionally used to know when the server is ready for processing requests.
 serve :: 
          RequestHandlers s->
          s ->
-         HostAddr ->
-         PortNumber ->
+         SockSpec ->
+         SockAddr -> 
          Maybe (MVar SockAddr) ->
          IO Bool
-serve userMsgHandlers serverState hostaddr port mSockLock = do
+serve userMsgHandlers serverState sockSpec sockAddr mSockLock = do
   let handleSock sock = do
         lockingSocket <- newLock sock
         drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandlers serverState)
-  Stream.unfold (SA.acceptorOnAddr [(ReuseAddr, 1), (NoDelay, 1)] mSockLock) (hostaddr, port) 
+  Stream.unfold (SA.acceptorOnSockSpec sockSpec mSockLock) sockAddr
    & Stream.parMapM id handleSock
    & Stream.fold FL.drain
   pure True

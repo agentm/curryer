@@ -15,10 +15,10 @@ main :: IO ()
 main = do
   --start server shared across benchmarks- gather stats on round-trip requests-responses
   portReadyMVar <- newEmptyMVar
-  server <- async (serve benchmarkServerRequestHandlers () localHostAddr 0 (Just portReadyMVar))
+  server <- async (serveIPv4 benchmarkServerRequestHandlers () localHostAddr 0 (Just portReadyMVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar portReadyMVar
-  clientConn <- connect [] localHostAddr port
+  clientConn <- connectIPv4 [] localHostAddr port
 
   _ <- syncWaitRequest clientConn 100
   let syncWait ms = nfIO (syncWaitRequest clientConn ms)

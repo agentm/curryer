@@ -19,7 +19,7 @@ Source-Repository head
     location: https://github.com/agentm/curryer
 
 Library
-        Build-Depends: base >= 4.12
+        Build-Depends: base >= 4.12 && <= 4.21
                      , winery
                      , bytestring
                      , streamly == 0.10.1
