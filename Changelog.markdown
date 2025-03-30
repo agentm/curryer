@@ -1,3 +1,7 @@
+# v0.4.0 (2025-03-29)
+
+* add ability to serve and connect to IPv6 and Unix domain sockets (#5)
+
 # v0.3.8 (2024-12-20)
 
 * add support for winery 1.5 but don't require it
