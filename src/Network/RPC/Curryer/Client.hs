@@ -1,6 +1,6 @@
 {-# LANGUAGE RankNTypes, ScopedTypeVariables, GADTs #-}
 module Network.RPC.Curryer.Client where
-import Network.RPC.Curryer.Server
+import Network.RPC.Curryer.Server (UUID(..), ConnectionError(..), SocketContext(..), BinaryMessage, HostAddressTuple, HostAddressTuple6, ServerHostName, ServerServiceName, Locking(..), Envelope(..), MessageType(..), withLock, lockingSocket, drainSocketMessages, openEnvelope, msgDeserialise, msgSerialise, fingerprint, sendEnvelope, newLock)
 import Network.Socket as Socket (Socket, PortNumber, SockAddr(..), close, Family(..), SocketType(..), tupleToHostAddress, tupleToHostAddress6)
 import Streamly.Internal.Network.Socket (SockSpec(..))
 import qualified Streamly.Internal.Network.Socket as SINS
@@ -32,10 +32,28 @@ data ClientAsyncRequestHandler where
 
 type ClientAsyncRequestHandlers = [ClientAsyncRequestHandler]
 
+data ClientConnectionConfig =
+  UnencryptedConnectionConfig |
+  EncryptedConnectionConfig ClientTLSConfig
+  deriving Show
+
+data ClientTLSConfig = ClientTLSConfig 
+    { tlsCertData :: ClientTLSCertInfo,
+      tlsServerHostName :: ServerHostName,
+      tlsServerServiceName :: ServerServiceName
+    } deriving Show
+
+data ClientTLSCertInfo = ClientTLSCertInfo
+  {
+    x509PublicPrivateFilePaths :: Maybe (FilePath, FilePath),
+    x509CertFilePath :: Maybe FilePath
+  } deriving Show
+
+                        
 -- | Connect to a remote server over IPv4. Wraps `connect`.
 connectIPv4 ::
   ClientAsyncRequestHandlers ->
-  ConnectionConfig ->
+  ClientConnectionConfig ->
   HostAddressTuple ->
   PortNumber ->
   IO Connection
@@ -51,7 +69,7 @@ connectIPv4 asyncHandlers config hostaddr portnum =
 -- | Connect to a remote server over IPv6. Wraps `connect`.
 connectIPv6 ::
   ClientAsyncRequestHandlers ->
-  ConnectionConfig ->
+  ClientConnectionConfig ->
   HostAddressTuple6 ->
   PortNumber ->
   IO Connection
@@ -80,7 +98,7 @@ connectUnixDomain asyncHandlers socketPath =
 -- | Connects to a remote server with specific async callbacks registered.
 connect :: 
   ClientAsyncRequestHandlers ->
-  ConnectionConfig ->
+  ClientConnectionConfig ->
   SINS.SockSpec ->
   SockAddr ->
   IO Connection
@@ -100,7 +118,10 @@ connect asyncHandlers config sockSpec sockAddr = do
 -- | Close the connection and release all connection resources.
 close :: Connection -> IO ()
 close conn = do
-  withLock (lockingSocket (_conn_sockContext conn)) $ \sock ->
+  withLock (lockingSocket (_conn_sockContext conn)) $ \sock -> do
+    case _conn_sockContext conn of
+      UnencryptedSocketContext{} -> pure ()
+      EncryptedSocketContext _ tlsCtx -> bye tlsCtx
     Socket.close sock
   cancel (_conn_asyncThread conn)
 
@@ -197,27 +218,34 @@ asyncCall conn msg = do
   sendEnvelope envelope (_conn_sockContext conn)
   pure (Right ())
 
-setupClientSocket :: ConnectionConfig -> Socket -> IO SocketContext
+setupClientSocket :: ClientConnectionConfig -> Socket -> IO SocketContext
 setupClientSocket config sock = do
   sockLock <- newLock sock
   case config of
     UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock)
     EncryptedConnectionConfig tlsConfig -> do
-      let pubKeyPath = x509PublicFilePath (tlsCertData tlsConfig)
-          privKeyPath = x509PrivateFilePath (tlsCertData tlsConfig)
-          serverHostTuple = (tlsServerHostName tlsConfig,
-                             tlsServerServiceName tlsConfig)
-          certPath = x509CertFilePath (tlsCertData tlsConfig)
-      eCred <- credentialLoadX509 pubKeyPath privKeyPath
-      case eCred of
-        Left err -> error err
-        Right cred -> do
-          mCAStore <- readCertificateStore certPath
-          case mCAStore of
-            Nothing -> error ("failed to load certificate store at " <> certPath)
-            Just caStore -> do
-              tlsCtx <- STLS.clientHandshake sock serverHostTuple cred (Just caStore)
-              traceShowM ("client handshake complete"::String)
-              pure (EncryptedSocketContext sockLock tlsCtx)
+      let serverHostTuple = (tlsServerHostName tlsConfig,
+                             tlsServerServiceName tlsConfig)      
+      mCred <- do
+            let mKeyPaths = x509PublicPrivateFilePaths (tlsCertData tlsConfig)
+            case mKeyPaths of
+              Nothing -> pure Nothing
+              Just (pubKeyPath, privKeyPath) -> do
+                eCred <- credentialLoadX509 pubKeyPath privKeyPath
+                case eCred of
+                  Left err -> error err
+                  Right cred ->
+                    pure (Just cred)
+      mCAStore <- case x509CertFilePath (tlsCertData tlsConfig) of
+                    Nothing -> pure Nothing
+                    Just certPath -> do
+                     mCAStore <- readCertificateStore certPath 
+                     case mCAStore of
+                       Nothing -> error ("failed to load certificate store at " <> certPath)
+                       Just caStore ->
+                         pure (Just caStore)
+      tlsCtx <- STLS.clientHandshake sock serverHostTuple mCred mCAStore
+      traceShowM ("client handshake complete"::String)
+      pure (EncryptedSocketContext sockLock tlsCtx)
 
   

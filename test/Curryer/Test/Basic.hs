@@ -14,8 +14,8 @@ import Control.Exception
 import Data.List
 import Data.Text (Text, pack)
 
-import Network.RPC.Curryer.Server
-import Network.RPC.Curryer.Client
+import Network.RPC.Curryer.Server as S
+import Network.RPC.Curryer.Client as C
 
 -- TODO: add test for nested calls
 
@@ -104,10 +104,10 @@ testSimpleCall :: Assertion
 testSimpleCall = do
   readyVar <- newEmptyMVar
         
-  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
+  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState S.UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar readyVar
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   replicateM_ 5 $ do --make five AddTwo calls to shake out parallelism bugs
     x <- call conn (AddTwoNumbersReq 1 1)
     assertEqual "server request+response" (Right (2 :: Int)) x
@@ -123,9 +123,9 @@ testAsyncServerCall = do
   let clientAsyncHandlers =
         [ClientAsyncRequestHandler (\(AsyncHelloReq s) ->
                                         putMVar receivedAsyncMessageVar s)]
-  server <- async (serveIPv4 (testServerRequestHandlers (Just receivedAsyncMessageVar)) emptyServerState UnencryptedConnectionConfig localHostAddr 0 (Just portReadyVar))
+  server <- async (serveIPv4 (testServerRequestHandlers (Just receivedAsyncMessageVar)) emptyServerState S.UnencryptedConnectionConfig localHostAddr 0 (Just portReadyVar))
   (SockAddrInet port _) <- takeMVar portReadyVar
-  conn <- connectIPv4 clientAsyncHandlers UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 clientAsyncHandlers C.UnencryptedConnectionConfig localHostAddr port
   Right () <- asyncCall conn (AsyncHelloReq "welcome")
   asyncMessage <- takeMVar receivedAsyncMessageVar
   assertEqual "async message" "welcome" asyncMessage
@@ -142,10 +142,10 @@ testAsyncClientCall = do
   portReadyVar <- newEmptyMVar
   receivedAsyncMessageVar <- newEmptyMVar
   
-  server <- async (serveIPv4 (testServerRequestHandlers (Just receivedAsyncMessageVar)) emptyServerState UnencryptedConnectionConfig localHostAddr 0 (Just portReadyVar))
+  server <- async (serveIPv4 (testServerRequestHandlers (Just receivedAsyncMessageVar)) emptyServerState S.UnencryptedConnectionConfig localHostAddr 0 (Just portReadyVar))
   (SockAddrInet port _) <- takeMVar portReadyVar
 
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   --send an async message, wait for an async response to confirm receipt
   Right () <- asyncCall conn (TestCallMeBackReq "hi server")
   asyncMessage <- takeMVar receivedAsyncMessageVar
@@ -157,10 +157,10 @@ testSyncClientCallTimeout :: Assertion
 testSyncClientCallTimeout = do
   readyVar <- newEmptyMVar
         
-  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
+  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState S.UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar readyVar
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   x <- callTimeout @_ @Int (Just 500) conn (DelayMicrosecondsReq 1000)
   assertEqual "client sync timeout" (Left TimeoutError) x
   close conn
@@ -170,10 +170,10 @@ testSyncException :: Assertion
 testSyncException = do
   readyVar <- newEmptyMVar
         
-  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
+  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState S.UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
   (SockAddrInet port _) <- takeMVar readyVar
 
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   ret <- call conn ThrowServerSideExceptionReq
   case ret of
     Left (ExceptionError actualExc) ->
@@ -189,9 +189,9 @@ testMultithreadedClient :: Assertion
 testMultithreadedClient = do
   readyVar <- newEmptyMVar
         
-  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
+  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState S.UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
   (SockAddrInet port _) <- takeMVar readyVar
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   let bigString = replicate (1024 * 1000) 'x'
   replicateM_ 10 $ do
     ret <- call conn (RoundtripStringReq bigString)
@@ -209,9 +209,9 @@ testServerState = do
                                              modifyTVar (connectionServerState sState) (+ 1))
                                              ]
   serverState <- newTVarIO @Int 1
-  server <- async (serveIPv4 serverHandlers serverState UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
+  server <- async (serveIPv4 serverHandlers serverState S.UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
   (SockAddrInet port _) <- takeMVar readyVar
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   ret <- call conn ChangeServerState
   assertEqual "server ret" (Right ()) ret
   serverState' <- readTVarIO serverState
@@ -228,9 +228,9 @@ testRequestHandlerThrowTimeout = do
                                           throw TimeoutException >> pure (1 :: Int)
                                           )
                                              ]
-  server <- async (serveIPv4 serverHandlers () UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
+  server <- async (serveIPv4 serverHandlers () S.UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
   (SockAddrInet port _) <- takeMVar readyVar
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   ret <- call @_ @Int conn ThrowTimeout
   assertEqual "handler timeout exception" (Left TimeoutError) ret
   close conn
@@ -246,10 +246,10 @@ testComplexADT :: Assertion
 testComplexADT = do
   let arg = SomeTextCon (pack "sduofhsldkfsldkfjsldkfjsdlkfjsdlfksdjlfksjdflksdjflksdjfjlsdjlfjdklskfjlsdlfk") (SomeIntCon 0 (EndCon))
   readyVar <- newEmptyMVar
-  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
+  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState S.UnencryptedConnectionConfig localHostAddr 0 (Just readyVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar readyVar
-  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr port
+  conn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
   replicateM_ 5 $ do --make five AddTwo calls to shake out parallelism bugs
     res <- call conn (RoundtripSomeADTReq arg)
     assertEqual "complex ADT" (Right arg) res
@@ -260,10 +260,10 @@ testIPv6Server :: Assertion
 testIPv6Server = do
   readyVar <- newEmptyMVar
         
-  server <- async (serveIPv6 (testServerRequestHandlers Nothing) emptyServerState UnencryptedConnectionConfig localHostAddr6 0 (Just readyVar))
+  server <- async (serveIPv6 (testServerRequestHandlers Nothing) emptyServerState S.UnencryptedConnectionConfig localHostAddr6 0 (Just readyVar))
   --wait for server to be ready
   (SockAddrInet6 port _ _ _) <- takeMVar readyVar
-  conn <- connectIPv6 [] UnencryptedConnectionConfig localHostAddr6 port
+  conn <- connectIPv6 [] C.UnencryptedConnectionConfig localHostAddr6 port
   replicateM_ 5 $ do --make five AddTwo calls to shake out parallelism bugs
     x <- call conn (AddTwoNumbersReq 1 1)
     assertEqual "server request+response" (Right (2 :: Int)) x

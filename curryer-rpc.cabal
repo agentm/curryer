@@ -43,6 +43,8 @@ Library
                      , data-default
                      , streaming-commons
                      , crypton-x509-store
+                     , crypton-x509
+                     , asn1-types
         Hs-Source-Dirs: ./src
         Default-Language: Haskell2010
         ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports

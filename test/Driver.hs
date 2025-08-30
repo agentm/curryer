@@ -7,5 +7,5 @@ main = defaultMain curryerTestTree
 
 curryerTestTree :: TestTree
 curryerTestTree = testGroup "curryer" [--Basic.testTree,
-  TLS.testTree]
+                                       TLS.testTree]
   

@@ -42,8 +42,10 @@ import Data.Hashable
 import System.Timeout
 import qualified Network.ByteOrder as BO
 import qualified Network.TLS as TLS
+import Data.X509.CertificateStore
+import Debug.Trace
 
-#define CURRYER_SHOW_BYTES 1
+#define CURRYER_SHOW_BYTES 0
 #define CURRYER_PASS_SCHEMA 0
 
 #if CURRYER_SHOW_BYTES == 1
@@ -86,15 +88,15 @@ withLock (Locking mvar v) m =
 lockless :: Locking a -> a
 lockless (Locking _ a) = a
 
-data TLSCertInfo = TLSCertInfo
+data ServerTLSCertInfo = ServerTLSCertInfo
   {
     x509PublicFilePath :: FilePath,
     x509CertFilePath :: FilePath,
     x509PrivateFilePath :: FilePath
   } deriving Show
 
-data TLSConfig = TLSConfig
-    { tlsCertData :: TLSCertInfo,
+data ServerTLSConfig = ServerTLSConfig
+    { tlsCertData :: ServerTLSCertInfo,
       tlsServerHostName :: ServerHostName,
       tlsServerServiceName :: ServerServiceName
     } deriving Show
@@ -102,10 +104,13 @@ data TLSConfig = TLSConfig
 type ServerHostName = HostName
 type ServerServiceName = BS.ByteString
 
-data ConnectionConfig = UnencryptedConnectionConfig |
-                        EncryptedConnectionConfig TLSConfig
-                        deriving Show
-                        
+data ServerConnectionConfig = UnencryptedConnectionConfig |
+                              EncryptedConnectionConfig ServerTLSConfig ClientAuth
+                            deriving Show
+
+data ClientAuth = ClientAuthRequired | AcceptAnonymousClient
+  deriving (Eq, Show)
+
 type Timeout = Word32
 
 type BinaryMessage = BS.ByteString
@@ -149,7 +154,8 @@ data RequestHandler serverState where
 -- | Server state sent in via `serve` and passed to `RequestHandler`s.
 data ConnectionState a = ConnectionState {
   connectionServerState :: a,
-  connectionSocketContext :: SocketContext
+  connectionSocketContext :: SocketContext,
+  connectionRoleName :: Maybe STLS.RoleName -- ^ if a client certificate is provided during the TLS handshake, the connection role is the organization unit, if available
   }
 
 data SocketContext = UnencryptedSocketContext (Locking Socket) |
@@ -298,7 +304,7 @@ defaultSocketOptions :: [(SocketOption, Int)]
 defaultSocketOptions = [(ReuseAddr, 1), (NoDelay, 1)]
 
 -- | Listen for new connections and handle requests on an IPv4 address. Wraps `serve1.
-serveIPv4 :: RequestHandlers s -> s -> ConnectionConfig -> HostAddressTuple -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
+serveIPv4 :: RequestHandlers s -> s -> ServerConnectionConfig -> HostAddressTuple -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
 serveIPv4 handlers state config hostaddr port mSockLock =
   serve handlers state config sockSpec sockAddr mSockLock
   where
@@ -310,7 +316,7 @@ serveIPv4 handlers state config hostaddr port mSockLock =
                         }
 
 -- | Listen for IPv6 RPC requests. Wraps `serve`.
-serveIPv6 :: RequestHandlers s -> s -> ConnectionConfig -> HostAddressTuple6 -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
+serveIPv6 :: RequestHandlers s -> s -> ServerConnectionConfig -> HostAddressTuple6 -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
 serveIPv6 handlers state config hostaddr port mSockLock =
   serve handlers state config sockSpec sockAddr mSockLock
   where
@@ -338,7 +344,7 @@ serveUnixDomain handlers state socketPath mSockLock =
 serve :: 
          RequestHandlers s ->
          s ->
-         ConnectionConfig ->
+         ServerConnectionConfig ->
          SockSpec ->
          SockAddr -> 
          Maybe (MVar SockAddr) ->
@@ -346,25 +352,30 @@ serve ::
 serve userMsgHandlers serverState config sockSpec sockAddr mSockLock = do
   let handleSock sock = do
         traceShowM ("handleSock"::String)
-        sockCtx <- setupServerSocket config sock
-        drainSocketMessages sockCtx (serverEnvelopeHandler sockCtx userMsgHandlers serverState)
+        (sockCtx, mRoleName) <- setupServerSocket config sock
+        drainSocketMessages sockCtx (serverEnvelopeHandler sockCtx mRoleName userMsgHandlers serverState)
   Stream.unfold (SA.acceptorOnSockSpec sockSpec mSockLock) sockAddr
    & Stream.parMapM id handleSock
    & Stream.fold FL.drain
   pure True
 
--- | Negotiate TLS on the socket, if necessary.
-setupServerSocket :: ConnectionConfig -> Socket -> IO SocketContext
+-- | Negotiate TLS on the socket, if necessary. If ClientAuth is True, then all clients are required to present a certificate for mutual TLS (anonymous clients will be rejected during the TLS handshake).
+setupServerSocket :: ServerConnectionConfig -> Socket -> IO (SocketContext, Maybe STLS.RoleName)
 setupServerSocket config sock = do
   sockLock <- newLock sock
   case config of
-    UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock)
-    EncryptedConnectionConfig tlsConfig -> do
+    UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock, Nothing)
+    EncryptedConnectionConfig tlsConfig clientAuth -> do
       traceShowM ("read creds"::String, tlsConfig)
+      let certPath = x509CertFilePath (tlsCertData tlsConfig)
       creds <- STLS.readCreds (x509PublicFilePath (tlsCertData tlsConfig)) (x509PrivateFilePath (tlsCertData tlsConfig))
-      tlsCtx <- STLS.serverHandshake sock creds
-      traceShowM ("handshake complete"::String)
-      pure (EncryptedSocketContext sockLock tlsCtx)
+      mCAStore <- readCertificateStore certPath
+      case mCAStore of
+        Nothing -> error ("failed to load certificate store at " <> certPath)
+        Just caStore -> do
+          (tlsCtx, mRoleName) <- STLS.serverHandshake sock creds (clientAuth /= AcceptAnonymousClient) (Just caStore)
+          traceShowM ("handshake complete"::String, mRoleName)
+          pure (EncryptedSocketContext sockLock tlsCtx, mRoleName)
 
 openEnvelope :: forall s. (Serialise s, Typeable s) => Envelope -> Maybe s
 openEnvelope (Envelope eprint _ _ bytes) =
@@ -393,14 +404,15 @@ matchEnvelope envelope dispatchf =
 
 -- | Called by `serve` to process incoming envelope requests. Never returns, so use `async` to spin it off on another thread.
 serverEnvelopeHandler :: SocketContext
+                     -> Maybe STLS.RoleName
                      -> RequestHandlers s
                      -> s         
                      -> Envelope
                      -> IO ()
-serverEnvelopeHandler _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
-serverEnvelopeHandler _ _ _ (Envelope _ ExceptionResponseMessage _ _) = pure ()
-serverEnvelopeHandler _ _ _ (Envelope _ ResponseMessage _ _) = pure ()
-serverEnvelopeHandler sockCtx msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
+serverEnvelopeHandler _ _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
+serverEnvelopeHandler _ _ _ _ (Envelope _ ExceptionResponseMessage _ _) = pure ()
+serverEnvelopeHandler _ _ _ _ (Envelope _ ResponseMessage _ _) = pure ()
+serverEnvelopeHandler sockCtx mRoleName msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
   --find first matching handler
   let runTimeout :: IO b -> IO (Maybe b)
       runTimeout m = 
@@ -414,7 +426,8 @@ serverEnvelopeHandler sockCtx msgHandlers serverState envelope@(Envelope _ (Requ
       
       sState = ConnectionState {
         connectionServerState = serverState,
-        connectionSocketContext = sockCtx
+        connectionSocketContext = sockCtx,
+        connectionRoleName = mRoleName
         }
             
       firstMatcher (RequestHandler msghandler) Nothing =

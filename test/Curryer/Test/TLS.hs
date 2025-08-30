@@ -11,8 +11,8 @@ import Control.Monad
 --import Control.Concurrent
 --import Control.Concurrent.STM
 
-import Network.RPC.Curryer.Server
-import Network.RPC.Curryer.Client
+import Network.RPC.Curryer.Server as S
+import Network.RPC.Curryer.Client as C
 
 {- Setup in test/Curryer/Test/:
 mkdir ca ca/certs ca/private ca/newcerts client_certs server
@@ -58,44 +58,79 @@ openssl s_client -connect 127.0.0.1:3000 -key client_certs/client.key.pem -cert 
 
 testTree :: TestTree
 testTree = testGroup "tls" [
-  testCase "simple request and response" testSimpleCall--,
---  testCase "mutual TLS" testMutualTLS
+  testCase "simple request and response" testSimpleCall,
+  testCase "mutual TLS" testMutualTLS--,
+--  testCase "test rejected anonymous client" testRejectedAnonymousClient
   ]
+
+-- TODO test should create its own self-signed CA, keys, and certs
 
 data AddTwoNumbersReq = AddTwoNumbersReq Int Int
   deriving (Generic, Show)
   deriving Serialise via WineryVariant AddTwoNumbersReq
 
+data GetRoleName = GetRoleName
+  deriving (Generic, Show)
+  deriving Serialise via WineryVariant GetRoleName
+
 testServerRequestHandlers :: Maybe (MVar String) -> RequestHandlers ()
 testServerRequestHandlers _mAsyncMVar =
-    [ RequestHandler $ \_ (AddTwoNumbersReq x y) -> pure (x + y)]
+    [ RequestHandler $ \_ (AddTwoNumbersReq x y) -> pure (x + y),
+      RequestHandler $ \state GetRoleName -> do
+        print ("GONK"::String, connectionRoleName state)
+        pure (connectionRoleName state)]
   
 
-serverConnectionConfig :: ConnectionConfig
-serverConnectionConfig = EncryptedConnectionConfig
-                         (TLSConfig
-                           {tlsCertData = certData,
-                           tlsServerHostName = "localhost",
-                           tlsServerServiceName = mempty})
+serverConnectionConfig :: ServerConnectionConfig
+serverConnectionConfig = S.EncryptedConnectionConfig
+                         (ServerTLSConfig
+                           {S.tlsCertData = certData,
+                            S.tlsServerHostName = "localhost",
+                            S.tlsServerServiceName = mempty}) AcceptAnonymousClient
   where
-    certData = TLSCertInfo {
+    certData = ServerTLSCertInfo {
       x509PublicFilePath = "./test/Curryer/Test/server/server.cert.pem",
-      x509CertFilePath = "./test/Curryer/Test/ca/certs/cacert.pem",
+      S.x509CertFilePath = "./test/Curryer/Test/ca/certs/cacert.pem",
       x509PrivateFilePath = "./test/Curryer/Test/server/server.key.pem"
       }
 
-clientConnectionConfig :: ConnectionConfig
-clientConnectionConfig = EncryptedConnectionConfig
-                         (TLSConfig {tlsCertData = certData,
-                                     tlsServerHostName = "localhost",
-                                     tlsServerServiceName = mempty})
+mTLSServerConnectionConfig :: ServerConnectionConfig
+mTLSServerConnectionConfig = S.EncryptedConnectionConfig
+                         (ServerTLSConfig
+                           {S.tlsCertData = certData,
+                            S.tlsServerHostName = "localhost",
+                            S.tlsServerServiceName = mempty}) ClientAuthRequired
   where
-    certData = TLSCertInfo {
-      x509PublicFilePath = "./test/Curryer/Test/client/client.cert.pem",
-      x509CertFilePath = "./test/Curryer/Test/ca/certs/cacert.pem",
-      x509PrivateFilePath = "./test/Curryer/Test/client/client.key.pem"
+    certData = ServerTLSCertInfo {
+      x509PublicFilePath = "./test/Curryer/Test/server/server.cert.pem",
+      S.x509CertFilePath = "./test/Curryer/Test/ca/certs/cacert.pem",
+      x509PrivateFilePath = "./test/Curryer/Test/server/server.key.pem"
       }
 
+mTLSClientConnectionConfig :: ClientConnectionConfig
+mTLSClientConnectionConfig = C.EncryptedConnectionConfig
+                         (ClientTLSConfig {C.tlsCertData = certData,
+                                     C.tlsServerHostName = "localhost",
+                                     C.tlsServerServiceName = mempty})
+  where
+    certData = ClientTLSCertInfo {
+      x509PublicPrivateFilePaths = Just ("./test/Curryer/Test/client/client.cert.pem",
+                                    "./test/Curryer/Test/client/client.key.pem"),
+      C.x509CertFilePath = Just "./test/Curryer/Test/ca/certs/cacert.pem"
+      }
+
+clientConnectionConfig :: ClientConnectionConfig
+clientConnectionConfig = C.EncryptedConnectionConfig
+                         (ClientTLSConfig {C.tlsCertData = certData,
+                                     C.tlsServerHostName = "localhost",
+                                     C.tlsServerServiceName = mempty})
+  where
+    certData = ClientTLSCertInfo {
+      x509PublicPrivateFilePaths = Nothing,
+      C.x509CertFilePath = Just "./test/Curryer/Test/ca/certs/cacert.pem"
+      }
+
+-- test an anonymous client connecting to a self-signed cert server
 testSimpleCall :: Assertion
 testSimpleCall = do
   readyVar <- newEmptyMVar
@@ -103,13 +138,24 @@ testSimpleCall = do
   server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState serverConnectionConfig localHostAddr 0 (Just readyVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar readyVar
-  print "connectIPv4"
   conn <- connectIPv4 [] clientConnectionConfig localHostAddr port
-  print "connectedIPv4"
   replicateM_ 5 $ do --make five AddTwo calls to shake out parallelism bugs
-    print "AddTwoNumbers"
     x <- call conn (AddTwoNumbersReq 1 1)
     assertEqual "server request+response" (Right (2 :: Int)) x
+  close conn
+  cancel server
+  
+-- test a mutual TLS RPC call
+testMutualTLS :: Assertion
+testMutualTLS = do
+  readyVar <- newEmptyMVar
+  let emptyServerState = ()
+  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState mTLSServerConnectionConfig localHostAddr 0 (Just readyVar))
+  --wait for server to be ready
+  (SockAddrInet port _) <- takeMVar readyVar
+  conn <- connectIPv4 [] mTLSClientConnectionConfig localHostAddr port
+  x <- call conn GetRoleName
+  assertEqual "get role name" (Right (Just "testou" :: Maybe String)) x
   close conn
   cancel server
   

@@ -21,11 +21,15 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Word (Word8)
 import Data.X509.CertificateStore
+import Data.X509
+import Data.ASN1.Types.String
+import Control.Concurrent.MVar
+import Control.Monad (void)
 import Debug.Trace
 
 
-clientHandshake :: Socket -> (HostName, ByteString) -> Credential -> Maybe CertificateStore -> IO TLS.Context
-clientHandshake socket (serverHostName, serverService) cred mCertStore = do
+clientHandshake :: Socket -> (HostName, ByteString) -> Maybe Credential -> Maybe CertificateStore -> IO TLS.Context
+clientHandshake socket (serverHostName, serverService) mCred mCertStore = do
   let backend = TLS.Backend { backendFlush = pure (),
                               backendClose = pure (),
                               backendSend = \bs -> sendAll socket (traceShow ("sendAll"::String, BS.length bs) bs),
@@ -39,43 +43,60 @@ clientHandshake socket (serverHostName, serverService) cred mCertStore = do
                                                   Just caStore -> caStore
                                               },
                  clientHooks = defaultClientHooks {
-                   onCertificateRequest = \_ -> pure (Just cred)
+                   onCertificateRequest = \_ -> pure mCred
                    }
                }
-  print ("curryer client ca store"::String, listCertificates (sharedCAStore (clientShared params)))
   ctx <- TLS.contextNew backend params
   TLS.handshake ctx
   pure ctx
 
-serverHandshake :: Socket -> TLS.Credentials -> IO TLS.Context
-serverHandshake socket creds = do
-  Just tempCAStore <- readCertificateStore "test/Curryer/Test/ca/certs/cacert.pem"
+type RoleName = String
+
+serverHandshake :: Socket -> TLS.Credentials -> Bool -> Maybe CertificateStore -> IO (TLS.Context, Maybe RoleName)
+serverHandshake socket creds requireClientAuth mCertStore = do
+  roleName <- newMVar Nothing
   let backend = TLS.Backend { backendFlush = pure (),
                               backendClose = pure (),
                               backendSend = \bs -> sendAll socket (traceShow ("serve sendAll"::String, BS.length bs) bs),
                               backendRecv = recvExact socket
                             }
+      certStore = case mCertStore of
+                    Nothing -> mempty
+                    Just store -> store
+      validationCache = sharedValidationCache defaultShared
       params = defaultParamsServer
-        { serverWantClientCert = True
+        { serverWantClientCert = requireClientAuth
         , serverSupported = def
             { supportedCiphers = TLSExtra.ciphersuite_default
             }
         , serverShared = def
             { sharedCredentials = creds,
-              sharedCAStore = tempCAStore
-{-              sharedValidationCache = ValidationCache { cacheQuery = \serviceId fprint _cert -> traceShowM ("cacheQuery", serviceId, fprint) >> pure ValidationCachePass,
-                                                        cacheAdd = \_ _ _ -> pure () }-}
+              sharedCAStore = certStore
             }
         , serverDebug = defaultDebugParams { debugError = \x -> putStrLn ("server: " <> x) }
-        , serverHooks = defaultServerHooks { onClientCertificate =
-                                             validateClientCertificate tempCAStore (sharedValidationCache defaultShared) }
+        , serverHooks = defaultServerHooks {
+            onClientCertificate = \certChain -> do
+                --extract role from client certificate and save it
+                void $ swapMVar roleName (extractRoleFromCertChain certChain)
+                validateClientCertificate certStore validationCache certChain }
         }
-  traceShowM ("contextNew"::String)        
   ctx <- TLS.contextNew backend params
   traceShowM ("handshake"::String)
   TLS.handshake ctx
+  roleName' <- takeMVar roleName
+  pure (ctx, roleName')
 
-  pure ctx
+extractRoleFromCertChain :: CertificateChain -> Maybe String
+extractRoleFromCertChain (CertificateChain [signedClientCert]) =
+  let clientCert = signedObject (getSigned signedClientCert)
+      dnElements = certSubjectDN clientCert
+      mOUElement = getDnElement DnOrganizationUnit dnElements
+  in
+    case mOUElement of
+      Nothing -> Nothing
+      Just ouElement -> asn1CharacterToString ouElement
+extractRoleFromCertChain _ = Nothing      
+
 
 -- | TLS requires exactly the number of bytes requested to be returned.
 recvExact :: Socket -> Int -> IO ByteString
