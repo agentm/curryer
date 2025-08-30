@@ -9,7 +9,7 @@ import qualified Streamly.Internal.Data.Unfold as UF
 import Streamly.Network.Socket hiding (acceptor)
 import qualified Streamly.Internal.Data.Stream as D
 import Streamly.Internal.Data.Unfold (Unfold(..))
-import Control.Monad (when)
+import Control.Monad (unless)
 --import Streamly.Internal.Network.Socket as INS
 
 acceptorOnSockSpec
@@ -56,7 +56,7 @@ initListener listenQLen sockSpec addr =
     where
 
     use sock = do
-        when (not (null (sockOpts sockSpec))) $ mapM_ (uncurry (setSocketOption sock)) (sockOpts sockSpec)
+        unless (null (sockOpts sockSpec)) $ mapM_ (uncurry (setSocketOption sock)) (sockOpts sockSpec)
         bind sock addr
         Net.listen sock listenQLen
         

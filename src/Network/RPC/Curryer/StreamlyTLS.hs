@@ -25,22 +25,19 @@ import Data.X509
 import Data.ASN1.Types.String
 import Control.Concurrent.MVar
 import Control.Monad (void)
-import Debug.Trace
-
+import Data.Maybe
 
 clientHandshake :: Socket -> (HostName, ByteString) -> Maybe Credential -> Maybe CertificateStore -> IO TLS.Context
 clientHandshake socket (serverHostName, serverService) mCred mCertStore = do
   let backend = TLS.Backend { backendFlush = pure (),
                               backendClose = pure (),
-                              backendSend = \bs -> sendAll socket (traceShow ("sendAll"::String, BS.length bs) bs),
+                              backendSend = sendAll socket,
                               backendRecv = recvExact socket
                             }
       params = (defaultParamsClient serverHostName serverService)
                {
                  clientDebug = defaultDebugParams { debugError = \x -> putStrLn ("client debug: " <> x) },
-                 clientShared = defaultShared { sharedCAStore = case mCertStore of
-                                                  Nothing -> mempty
-                                                  Just caStore -> caStore
+                 clientShared = defaultShared { sharedCAStore = fromMaybe mempty mCertStore 
                                               },
                  clientHooks = defaultClientHooks {
                    onCertificateRequest = \_ -> pure mCred
@@ -57,12 +54,10 @@ serverHandshake socket creds requireClientAuth mCertStore = do
   roleName <- newMVar Nothing
   let backend = TLS.Backend { backendFlush = pure (),
                               backendClose = pure (),
-                              backendSend = \bs -> sendAll socket (traceShow ("serve sendAll"::String, BS.length bs) bs),
+                              backendSend = sendAll socket,
                               backendRecv = recvExact socket
                             }
-      certStore = case mCertStore of
-                    Nothing -> mempty
-                    Just store -> store
+      certStore = fromMaybe mempty mCertStore
       validationCache = sharedValidationCache defaultShared
       params = defaultParamsServer
         { serverWantClientCert = requireClientAuth
@@ -81,7 +76,6 @@ serverHandshake socket creds requireClientAuth mCertStore = do
                 validateClientCertificate certStore validationCache certChain }
         }
   ctx <- TLS.contextNew backend params
-  traceShowM ("handshake"::String)
   TLS.handshake ctx
   roleName' <- takeMVar roleName
   pure (ctx, roleName')
@@ -92,18 +86,14 @@ extractRoleFromCertChain (CertificateChain [signedClientCert]) =
       dnElements = certSubjectDN clientCert
       mOUElement = getDnElement DnOrganizationUnit dnElements
   in
-    case mOUElement of
-      Nothing -> Nothing
-      Just ouElement -> asn1CharacterToString ouElement
+    asn1CharacterToString =<< mOUElement
 extractRoleFromCertChain _ = Nothing      
 
 
 -- | TLS requires exactly the number of bytes requested to be returned.
 recvExact :: Socket -> Int -> IO ByteString
 recvExact socket i = do
-    bs <- loop id i
-    traceShowM ("recvExact"::String, BS.length bs)
-    pure bs
+    loop id i
   where
     loop front rest
         | rest < 0 = error "StreamlyTLS.recvExact: rest < 0"
@@ -145,7 +135,6 @@ chunkTLSReader ctx = Unfold step inject
       if BS.length bs == 0 then
         pure D.Stop
         else do
-        traceShowM ("Yield"::String, BS.length bs)
         pure (D.Yield (toArray bs) ())
     inject _sock = pure ()
       

@@ -16,7 +16,6 @@ import System.Timeout
 import Control.Monad
 import Network.TLS
 import Data.X509.CertificateStore
-import Debug.Trace
 
 type SyncMap = STMMap.Map UUID (MVar (Either ConnectionError BinaryMessage), UTCTime)
 
@@ -108,7 +107,6 @@ connect asyncHandlers config sockSpec sockAddr = do
   sockCtx <- setupClientSocket config sock  
   asyncThread <- async (clientAsync sockCtx syncmap asyncHandlers)
 
-  print "client connect"
   pure (Connection {
            _conn_sockContext = sockCtx,
            _conn_asyncThread = asyncThread,
@@ -245,7 +243,6 @@ setupClientSocket config sock = do
                        Just caStore ->
                          pure (Just caStore)
       tlsCtx <- STLS.clientHandshake sock serverHostTuple mCred mCAStore
-      traceShowM ("client handshake complete"::String)
       pure (EncryptedSocketContext sockLock tlsCtx)
 
   

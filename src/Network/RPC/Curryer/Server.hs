@@ -43,7 +43,6 @@ import System.Timeout
 import qualified Network.ByteOrder as BO
 import qualified Network.TLS as TLS
 import Data.X509.CertificateStore
-import Debug.Trace
 
 #define CURRYER_SHOW_BYTES 0
 #define CURRYER_PASS_SCHEMA 0
@@ -305,8 +304,8 @@ defaultSocketOptions = [(ReuseAddr, 1), (NoDelay, 1)]
 
 -- | Listen for new connections and handle requests on an IPv4 address. Wraps `serve1.
 serveIPv4 :: RequestHandlers s -> s -> ServerConnectionConfig -> HostAddressTuple -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
-serveIPv4 handlers state config hostaddr port mSockLock =
-  serve handlers state config sockSpec sockAddr mSockLock
+serveIPv4 handlers state config hostaddr port  =
+  serve handlers state config sockSpec sockAddr
   where
     sockAddr = SockAddrInet port (tupleToHostAddress hostaddr)
     sockSpec = SockSpec { sockFamily = AF_INET,
@@ -317,8 +316,8 @@ serveIPv4 handlers state config hostaddr port mSockLock =
 
 -- | Listen for IPv6 RPC requests. Wraps `serve`.
 serveIPv6 :: RequestHandlers s -> s -> ServerConnectionConfig -> HostAddressTuple6 -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
-serveIPv6 handlers state config hostaddr port mSockLock =
-  serve handlers state config sockSpec sockAddr mSockLock
+serveIPv6 handlers state config hostaddr port =
+  serve handlers state config sockSpec sockAddr
   where
     flowInfo = 0
     scopeInfo = 0
@@ -331,8 +330,8 @@ serveIPv6 handlers state config hostaddr port mSockLock =
 
 -- | Listen for Unix domain socket RPC requests. Wraps `serve`.
 serveUnixDomain :: RequestHandlers s -> s -> FilePath -> Maybe (MVar SockAddr) -> IO Bool
-serveUnixDomain handlers state socketPath mSockLock =
-  serve handlers state UnencryptedConnectionConfig sockSpec sockAddr mSockLock
+serveUnixDomain handlers state socketPath =
+  serve handlers state UnencryptedConnectionConfig sockSpec sockAddr
   where
     sockSpec = SockSpec { sockFamily = AF_UNIX,
                           sockType = Stream,
@@ -351,7 +350,6 @@ serve ::
          IO Bool
 serve userMsgHandlers serverState config sockSpec sockAddr mSockLock = do
   let handleSock sock = do
-        traceShowM ("handleSock"::String)
         (sockCtx, mRoleName) <- setupServerSocket config sock
         drainSocketMessages sockCtx (serverEnvelopeHandler sockCtx mRoleName userMsgHandlers serverState)
   Stream.unfold (SA.acceptorOnSockSpec sockSpec mSockLock) sockAddr
@@ -366,7 +364,6 @@ setupServerSocket config sock = do
   case config of
     UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock, Nothing)
     EncryptedConnectionConfig tlsConfig clientAuth -> do
-      traceShowM ("read creds"::String, tlsConfig)
       let certPath = x509CertFilePath (tlsCertData tlsConfig)
       creds <- STLS.readCreds (x509PublicFilePath (tlsCertData tlsConfig)) (x509PrivateFilePath (tlsCertData tlsConfig))
       mCAStore <- readCertificateStore certPath
@@ -374,7 +371,6 @@ setupServerSocket config sock = do
         Nothing -> error ("failed to load certificate store at " <> certPath)
         Just caStore -> do
           (tlsCtx, mRoleName) <- STLS.serverHandshake sock creds (clientAuth /= AcceptAnonymousClient) (Just caStore)
-          traceShowM ("handshake complete"::String, mRoleName)
           pure (EncryptedSocketContext sockLock tlsCtx, mRoleName)
 
 openEnvelope :: forall s. (Serialise s, Typeable s) => Envelope -> Maybe s

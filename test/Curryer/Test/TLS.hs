@@ -77,7 +77,7 @@ testServerRequestHandlers :: Maybe (MVar String) -> RequestHandlers ()
 testServerRequestHandlers _mAsyncMVar =
     [ RequestHandler $ \_ (AddTwoNumbersReq x y) -> pure (x + y),
       RequestHandler $ \state GetRoleName -> do
-        print ("GONK"::String, connectionRoleName state)
+        --print ("request roleName"::String, connectionRoleName state)
         pure (connectionRoleName state)]
   
 
