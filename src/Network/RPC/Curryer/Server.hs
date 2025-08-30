@@ -28,6 +28,7 @@ import qualified Streamly.Data.Stream.Prelude as P
 import qualified Streamly.External.ByteString as StreamlyBS
 import Streamly.Data.Stream.Prelude as Stream hiding (foldr)
 import Streamly.Internal.Data.Binary.Parser (word32be)
+import qualified Streamly.Data.Unfold as UF
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
 import qualified Data.UUID.V4 as UUIDBase
@@ -36,12 +37,13 @@ import Data.Functor
 import Control.Applicative
 
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
+import qualified Network.RPC.Curryer.StreamlyTLS as STLS
 import Data.Hashable
 import System.Timeout
 import qualified Network.ByteOrder as BO
+import qualified Network.TLS as TLS
 
-
-#define CURRYER_SHOW_BYTES 0
+#define CURRYER_SHOW_BYTES 1
 #define CURRYER_PASS_SCHEMA 0
 
 #if CURRYER_SHOW_BYTES == 1
@@ -84,6 +86,26 @@ withLock (Locking mvar v) m =
 lockless :: Locking a -> a
 lockless (Locking _ a) = a
 
+data TLSCertInfo = TLSCertInfo
+  {
+    x509PublicFilePath :: FilePath,
+    x509CertFilePath :: FilePath,
+    x509PrivateFilePath :: FilePath
+  } deriving Show
+
+data TLSConfig = TLSConfig
+    { tlsCertData :: TLSCertInfo,
+      tlsServerHostName :: ServerHostName,
+      tlsServerServiceName :: ServerServiceName
+    } deriving Show
+
+type ServerHostName = HostName
+type ServerServiceName = BS.ByteString
+
+data ConnectionConfig = UnencryptedConnectionConfig |
+                        EncryptedConnectionConfig TLSConfig
+                        deriving Show
+                        
 type Timeout = Word32
 
 type BinaryMessage = BS.ByteString
@@ -127,17 +149,24 @@ data RequestHandler serverState where
 -- | Server state sent in via `serve` and passed to `RequestHandler`s.
 data ConnectionState a = ConnectionState {
   connectionServerState :: a,
-  connectionSocket :: Locking Socket
+  connectionSocketContext :: SocketContext
   }
 
+data SocketContext = UnencryptedSocketContext (Locking Socket) |
+                     EncryptedSocketContext (Locking Socket) TLS.Context
+
+lockingSocket :: SocketContext -> Locking Socket
+lockingSocket (UnencryptedSocketContext ls) = ls
+lockingSocket (EncryptedSocketContext ls _tlsCtx) = ls
+
 -- | Used by server-side request handlers to send additional messages to the client. This is useful for sending asynchronous responses to the client outside of the normal request-response flow. The locking socket can be found in the ConnectionState when a request handler is called.
-sendMessage :: Serialise a => Locking Socket -> a -> IO ()
-sendMessage lockSock msg = do
+sendMessage :: Serialise a => SocketContext -> a -> IO ()
+sendMessage sockCtx msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
   let env =
         Envelope (fingerprint msg) (RequestMessage timeout') requestID (msgSerialise msg)
       timeout' = 0
-  sendEnvelope env lockSock
+  sendEnvelope env sockCtx
   
 --avoid orphan instance
 newtype UUID = UUID { _unUUID :: UUIDBase.UUID }
@@ -269,9 +298,9 @@ defaultSocketOptions :: [(SocketOption, Int)]
 defaultSocketOptions = [(ReuseAddr, 1), (NoDelay, 1)]
 
 -- | Listen for new connections and handle requests on an IPv4 address. Wraps `serve1.
-serveIPv4 :: RequestHandlers s -> s -> HostAddressTuple -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
-serveIPv4 handlers state hostaddr port mSockLock =
-  serve handlers state sockSpec sockAddr mSockLock
+serveIPv4 :: RequestHandlers s -> s -> ConnectionConfig -> HostAddressTuple -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
+serveIPv4 handlers state config hostaddr port mSockLock =
+  serve handlers state config sockSpec sockAddr mSockLock
   where
     sockAddr = SockAddrInet port (tupleToHostAddress hostaddr)
     sockSpec = SockSpec { sockFamily = AF_INET,
@@ -281,9 +310,9 @@ serveIPv4 handlers state hostaddr port mSockLock =
                         }
 
 -- | Listen for IPv6 RPC requests. Wraps `serve`.
-serveIPv6 :: RequestHandlers s -> s -> HostAddressTuple6 -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
-serveIPv6 handlers state hostaddr port mSockLock =
-  serve handlers state sockSpec sockAddr mSockLock
+serveIPv6 :: RequestHandlers s -> s -> ConnectionConfig -> HostAddressTuple6 -> PortNumber -> Maybe (MVar SockAddr) -> IO Bool
+serveIPv6 handlers state config hostaddr port mSockLock =
+  serve handlers state config sockSpec sockAddr mSockLock
   where
     flowInfo = 0
     scopeInfo = 0
@@ -297,7 +326,7 @@ serveIPv6 handlers state hostaddr port mSockLock =
 -- | Listen for Unix domain socket RPC requests. Wraps `serve`.
 serveUnixDomain :: RequestHandlers s -> s -> FilePath -> Maybe (MVar SockAddr) -> IO Bool
 serveUnixDomain handlers state socketPath mSockLock =
-  serve handlers state sockSpec sockAddr mSockLock
+  serve handlers state UnencryptedConnectionConfig sockSpec sockAddr mSockLock
   where
     sockSpec = SockSpec { sockFamily = AF_UNIX,
                           sockType = Stream,
@@ -307,20 +336,35 @@ serveUnixDomain handlers state socketPath mSockLock =
   
 -- | Listen for new connections and handle requests which are passed the server state 's'. The MVar SockAddr can be be optionally used to know when the server is ready for processing requests.
 serve :: 
-         RequestHandlers s->
+         RequestHandlers s ->
          s ->
+         ConnectionConfig ->
          SockSpec ->
          SockAddr -> 
          Maybe (MVar SockAddr) ->
          IO Bool
-serve userMsgHandlers serverState sockSpec sockAddr mSockLock = do
+serve userMsgHandlers serverState config sockSpec sockAddr mSockLock = do
   let handleSock sock = do
-        lockingSocket <- newLock sock
-        drainSocketMessages sock (serverEnvelopeHandler lockingSocket userMsgHandlers serverState)
+        traceShowM ("handleSock"::String)
+        sockCtx <- setupServerSocket config sock
+        drainSocketMessages sockCtx (serverEnvelopeHandler sockCtx userMsgHandlers serverState)
   Stream.unfold (SA.acceptorOnSockSpec sockSpec mSockLock) sockAddr
    & Stream.parMapM id handleSock
    & Stream.fold FL.drain
   pure True
+
+-- | Negotiate TLS on the socket, if necessary.
+setupServerSocket :: ConnectionConfig -> Socket -> IO SocketContext
+setupServerSocket config sock = do
+  sockLock <- newLock sock
+  case config of
+    UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock)
+    EncryptedConnectionConfig tlsConfig -> do
+      traceShowM ("read creds"::String, tlsConfig)
+      creds <- STLS.readCreds (x509PublicFilePath (tlsCertData tlsConfig)) (x509PrivateFilePath (tlsCertData tlsConfig))
+      tlsCtx <- STLS.serverHandshake sock creds
+      traceShowM ("handshake complete"::String)
+      pure (EncryptedSocketContext sockLock tlsCtx)
 
 openEnvelope :: forall s. (Serialise s, Typeable s) => Envelope -> Maybe s
 openEnvelope (Envelope eprint _ _ bytes) =
@@ -348,8 +392,7 @@ matchEnvelope envelope dispatchf =
     Just decoded -> Just (dispatchf, decoded)
 
 -- | Called by `serve` to process incoming envelope requests. Never returns, so use `async` to spin it off on another thread.
-serverEnvelopeHandler :: 
-                     Locking Socket
+serverEnvelopeHandler :: SocketContext
                      -> RequestHandlers s
                      -> s         
                      -> Envelope
@@ -357,7 +400,7 @@ serverEnvelopeHandler ::
 serverEnvelopeHandler _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
 serverEnvelopeHandler _ _ _ (Envelope _ ExceptionResponseMessage _ _) = pure ()
 serverEnvelopeHandler _ _ _ (Envelope _ ResponseMessage _ _) = pure ()
-serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
+serverEnvelopeHandler sockCtx msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
   --find first matching handler
   let runTimeout :: IO b -> IO (Maybe b)
       runTimeout m = 
@@ -371,7 +414,7 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
       
       sState = ConnectionState {
         connectionServerState = serverState,
-        connectionSocket = sockLock
+        connectionSocketContext = sockCtx
         }
             
       firstMatcher (RequestHandler msghandler) Nothing =
@@ -386,7 +429,7 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
                           Envelope (fingerprint response) ResponseMessage msgId (msgSerialise response)
                         Nothing -> 
                           Envelope (fingerprint TimeoutError) TimeoutResponseMessage msgId BS.empty
-            sendEnvelope envelopeResponse sockLock
+            sendEnvelope envelopeResponse sockCtx
             pure (Just ())
       firstMatcher (AsyncRequestHandler msghandler) Nothing =        
         case matchEnvelope envelope msghandler of
@@ -399,33 +442,44 @@ serverEnvelopeHandler sockLock msgHandlers serverState envelope@(Envelope _ (Req
   case eExc of
     Left exc ->
       let env = Envelope (fingerprint (show exc)) ExceptionResponseMessage msgId (msgSerialise (show exc)) in
-      sendEnvelope env sockLock
+      sendEnvelope env sockCtx
     Right () -> pure ()
 
 
 type EnvelopeHandler = Envelope -> IO ()
 
-drainSocketMessages :: Socket -> EnvelopeHandler -> IO ()
-drainSocketMessages sock envelopeHandler = do
-  SP.unfold SSock.reader sock
-  & P.parseMany envelopeP
-  & SP.catRights
-  & SP.parMapM (SP.ordered False) envelopeHandler
-  & SP.fold FL.drain
+drainSocketMessages :: SocketContext -> EnvelopeHandler -> IO ()
+drainSocketMessages sockCtx envelopeHandler = do
+      
+  let socketReader :: UF.Unfold IO Socket Word8
+      socketReader = case sockCtx of
+                       UnencryptedSocketContext{} -> SSock.reader
+                       EncryptedSocketContext _lsock tlsCtx ->
+                         STLS.tlsReader tlsCtx
+      sock = lockless (lockingSocket sockCtx)
+  SP.unfold socketReader sock
+   & P.parseMany envelopeP
+   & SP.catRights
+   & SP.parMapM (SP.ordered False) envelopeHandler 
+   & SP.fold FL.drain
 
 --send length-tagged bytestring, perhaps should be in network byte order?
-sendEnvelope :: Envelope -> Locking Socket -> IO ()
-sendEnvelope envelope sockLock = do
+sendEnvelope :: Envelope -> SocketContext -> IO ()
+sendEnvelope envelope sockCtx = do
   let envelopebytes = encodeEnvelope envelope
   --Socket.sendAll syscalls send() on a loop until all the bytes are sent, so we need socket locking here to account for serialized messages of size > PIPE_BUF
-  withLock sockLock $ \socket' -> do
+  withLock (lockingSocket sockCtx) $ \socket' -> do
     {-traceShowM ("sendEnvelope"::String,
                 ("type"::String, envMessageType envelope),
                 socket',
                 ("envelope len out"::String, BS.length envelopebytes),
                 "payloadbytes"::String, envPayload envelope
                )-}
-    Socket.sendAll socket' envelopebytes
+    case sockCtx of
+      UnencryptedSocketContext{} ->
+        Socket.sendAll socket' envelopebytes
+      EncryptedSocketContext _ls tlsCtx ->
+        TLS.sendData tlsCtx (BSL.fromStrict envelopebytes)
   traceBytes "sendEnvelope" envelopebytes
 
 fingerprint :: Typeable a => a -> Fingerprint

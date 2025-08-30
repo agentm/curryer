@@ -41,10 +41,10 @@ listenTuples mSockLock = Unfold step inject
           Just mvar -> putMVar mvar sockAddr
           Nothing -> pure ()
         pure sock
-
+    step :: MonadIO m => Socket -> m (D.Step Socket (Socket, SockAddr))
     step listener = do
-        r <- liftIO (Net.accept listener `onException` Net.close listener)
-        return $ D.Yield r listener
+        (sock, sockAddr) <- liftIO $ Net.accept listener `onException` Net.close listener
+        return $ D.Yield (sock, sockAddr) listener
 
 initListener :: Int -> SockSpec -> SockAddr -> IO Socket
 initListener listenQLen sockSpec addr =

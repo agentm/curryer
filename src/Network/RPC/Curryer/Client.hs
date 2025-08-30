@@ -4,6 +4,7 @@ import Network.RPC.Curryer.Server
 import Network.Socket as Socket (Socket, PortNumber, SockAddr(..), close, Family(..), SocketType(..), tupleToHostAddress, tupleToHostAddress6)
 import Streamly.Internal.Network.Socket (SockSpec(..))
 import qualified Streamly.Internal.Network.Socket as SINS
+import qualified Network.RPC.Curryer.StreamlyTLS as STLS
 import Codec.Winery
 import Control.Concurrent.Async
 import qualified Data.UUID.V4 as UUIDBase
@@ -13,11 +14,14 @@ import GHC.Conc
 import Data.Time.Clock
 import System.Timeout
 import Control.Monad
+import Network.TLS
+import Data.X509.CertificateStore
+import Debug.Trace
 
 type SyncMap = STMMap.Map UUID (MVar (Either ConnectionError BinaryMessage), UTCTime)
 
 -- | Represents a remote connection to server.
-data Connection = Connection { _conn_sockLock :: Locking Socket,
+data Connection = Connection { _conn_sockContext :: SocketContext,
                                _conn_asyncThread :: Async (),
                                _conn_syncmap :: SyncMap
                              }
@@ -31,11 +35,12 @@ type ClientAsyncRequestHandlers = [ClientAsyncRequestHandler]
 -- | Connect to a remote server over IPv4. Wraps `connect`.
 connectIPv4 ::
   ClientAsyncRequestHandlers ->
+  ConnectionConfig ->
   HostAddressTuple ->
   PortNumber ->
   IO Connection
-connectIPv4 asyncHandlers hostaddr portnum =
-  connect asyncHandlers sockSpec sockAddr
+connectIPv4 asyncHandlers config hostaddr portnum =
+  connect asyncHandlers config sockSpec sockAddr
   where
     sockSpec = SINS.SockSpec { sockFamily = AF_INET,
                                sockType = Stream,
@@ -46,11 +51,12 @@ connectIPv4 asyncHandlers hostaddr portnum =
 -- | Connect to a remote server over IPv6. Wraps `connect`.
 connectIPv6 ::
   ClientAsyncRequestHandlers ->
+  ConnectionConfig ->
   HostAddressTuple6 ->
   PortNumber ->
   IO Connection
-connectIPv6 asyncHandlers hostaddr portnum =
-  connect asyncHandlers sockSpec sockAddr  
+connectIPv6 asyncHandlers config hostaddr portnum =
+  connect asyncHandlers config sockSpec sockAddr  
   where
     sockSpec = SINS.SockSpec { sockFamily = AF_INET6,
                                sockType = Stream,
@@ -63,7 +69,7 @@ connectUnixDomain ::
   FilePath ->
   IO Connection
 connectUnixDomain asyncHandlers socketPath =
-  connect asyncHandlers sockSpec sockAddr
+  connect asyncHandlers UnencryptedConnectionConfig sockSpec sockAddr
   where
     sockSpec = SINS.SockSpec { sockFamily = AF_UNIX,
                                sockType = Stream,
@@ -74,16 +80,19 @@ connectUnixDomain asyncHandlers socketPath =
 -- | Connects to a remote server with specific async callbacks registered.
 connect :: 
   ClientAsyncRequestHandlers ->
+  ConnectionConfig ->
   SINS.SockSpec ->
   SockAddr ->
   IO Connection
-connect asyncHandlers sockSpec sockAddr = do
+connect asyncHandlers config sockSpec sockAddr = do
   sock <- SINS.connect sockSpec sockAddr
   syncmap <- STMMap.newIO
-  asyncThread <- async (clientAsync sock syncmap asyncHandlers)
-  sockLock <- newLock sock
+  sockCtx <- setupClientSocket config sock  
+  asyncThread <- async (clientAsync sockCtx syncmap asyncHandlers)
+
+  print "client connect"
   pure (Connection {
-           _conn_sockLock = sockLock,
+           _conn_sockContext = sockCtx,
            _conn_asyncThread = asyncThread,
            _conn_syncmap = syncmap
            })
@@ -91,19 +100,18 @@ connect asyncHandlers sockSpec sockAddr = do
 -- | Close the connection and release all connection resources.
 close :: Connection -> IO ()
 close conn = do
-  withLock (_conn_sockLock conn) $ \sock ->
+  withLock (lockingSocket (_conn_sockContext conn)) $ \sock ->
     Socket.close sock
   cancel (_conn_asyncThread conn)
 
 -- | async thread for handling client-side incoming messages- dispatch to proper waiting thread or asynchronous notifications handler
-clientAsync :: 
-  Socket ->
+clientAsync ::
+  SocketContext ->
   SyncMap ->
   ClientAsyncRequestHandlers ->
   IO ()
-clientAsync sock syncmap asyncHandlers = do
-  lsock <- newLock sock
-  drainSocketMessages sock (clientEnvelopeHandler asyncHandlers lsock syncmap)
+clientAsync sockCtx syncmap asyncHandlers = do
+  drainSocketMessages sockCtx (clientEnvelopeHandler asyncHandlers (lockingSocket sockCtx) syncmap)
 
 consumeResponse :: UUID -> STMMap.Map UUID (MVar a, b) -> a -> IO ()
 consumeResponse msgId syncMap val = do
@@ -162,7 +170,7 @@ callTimeout mTimeout conn msg = do
   responseMVar <- newEmptyMVar
   now <- getCurrentTime
   atomically $ STMMap.insert (responseMVar, now) requestID mVarMap
-  sendEnvelope envelope (_conn_sockLock conn)
+  sendEnvelope envelope (_conn_sockContext conn)
   let timeoutMicroseconds =
         case mTimeout of
           Just timeout' -> timeout' + 100 --add 100 ms to account for unknown network latency
@@ -186,6 +194,30 @@ asyncCall conn msg = do
   requestID <- UUID <$> UUIDBase.nextRandom
   let envelope = Envelope fprint (RequestMessage 0) requestID (msgSerialise msg)
       fprint = fingerprint msg
-  sendEnvelope envelope (_conn_sockLock conn)
+  sendEnvelope envelope (_conn_sockContext conn)
   pure (Right ())
 
+setupClientSocket :: ConnectionConfig -> Socket -> IO SocketContext
+setupClientSocket config sock = do
+  sockLock <- newLock sock
+  case config of
+    UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock)
+    EncryptedConnectionConfig tlsConfig -> do
+      let pubKeyPath = x509PublicFilePath (tlsCertData tlsConfig)
+          privKeyPath = x509PrivateFilePath (tlsCertData tlsConfig)
+          serverHostTuple = (tlsServerHostName tlsConfig,
+                             tlsServerServiceName tlsConfig)
+          certPath = x509CertFilePath (tlsCertData tlsConfig)
+      eCred <- credentialLoadX509 pubKeyPath privKeyPath
+      case eCred of
+        Left err -> error err
+        Right cred -> do
+          mCAStore <- readCertificateStore certPath
+          case mCAStore of
+            Nothing -> error ("failed to load certificate store at " <> certPath)
+            Just caStore -> do
+              tlsCtx <- STLS.clientHandshake sock serverHostTuple cred (Just caStore)
+              traceShowM ("client handshake complete"::String)
+              pure (EncryptedSocketContext sockLock tlsCtx)
+
+  

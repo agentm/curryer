@@ -32,12 +32,17 @@ Library
                      , uuid
                      , fast-builder
                      , binary
+                     , text
                      , containers
                      , stm-containers
                      , hashable
                      , time
                      , network-byte-order
                      , stm
+                     , tls >= 2.1.11
+                     , data-default
+                     , streaming-commons
+                     , crypton-x509-store
         Hs-Source-Dirs: ./src
         Default-Language: Haskell2010
         ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports
@@ -45,6 +50,7 @@ Library
                         Network.RPC.Curryer.Server
                         Network.RPC.Curryer.Client
                         Network.RPC.Curryer.StreamlyAdditions
+                        Network.RPC.Curryer.StreamlyTLS                        
 
 Test-Suite test
   type: exitcode-stdio-1.0
@@ -64,7 +70,7 @@ Test-Suite test
                , streamly-core >= 0.1.0
                , bytestring
                , streamly-bytestring >= 0.2.1
-  other-modules: Curryer.Test.Basic
+  other-modules: Curryer.Test.Basic, Curryer.Test.TLS
 
 Benchmark perf
     Default-Language: Haskell2010
