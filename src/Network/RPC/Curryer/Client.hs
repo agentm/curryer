@@ -31,17 +31,20 @@ data ClientAsyncRequestHandler where
 
 type ClientAsyncRequestHandlers = [ClientAsyncRequestHandler]
 
+-- | Specifies whether the connection should be encrypted with TLS (preferred) or unencrypted.
 data ClientConnectionConfig =
   UnencryptedConnectionConfig |
   EncryptedConnectionConfig ClientTLSConfig
   deriving Show
 
+-- | Client-side encryption TLS configuration.
 data ClientTLSConfig = ClientTLSConfig 
     { tlsCertData :: ClientTLSCertInfo,
       tlsServerHostName :: ServerHostName,
       tlsServerServiceName :: ServerServiceName
     } deriving Show
 
+-- | Client-side TLS keys and certificate information for use with optional mutual TLS.
 data ClientTLSCertInfo = ClientTLSCertInfo
   {
     x509PublicPrivateFilePaths :: Maybe (FilePath, FilePath),
@@ -81,6 +84,7 @@ connectIPv6 asyncHandlers config hostaddr portnum =
                                sockOpts = [] }
     sockAddr = SockAddrInet6 portnum 0 (tupleToHostAddress6 hostaddr) 0
 
+-- | Connect to a server running on localhost using Unix domain sockets.
 connectUnixDomain ::
   ClientAsyncRequestHandlers ->
   FilePath ->
@@ -216,6 +220,7 @@ asyncCall conn msg = do
   sendEnvelope envelope (_conn_sockContext conn)
   pure (Right ())
 
+-- | Post-TCP connection client socket setup, especially for TLS handshake.
 setupClientSocket :: ClientConnectionConfig -> Socket -> IO SocketContext
 setupClientSocket config sock = do
   sockLock <- newLock sock

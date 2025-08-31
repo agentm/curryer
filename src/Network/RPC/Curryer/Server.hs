@@ -87,6 +87,7 @@ withLock (Locking mvar v) m =
 lockless :: Locking a -> a
 lockless (Locking _ a) = a
 
+-- | Server-side TLS key/certificate information.
 data ServerTLSCertInfo = ServerTLSCertInfo
   {
     x509PublicFilePath :: FilePath,
@@ -94,6 +95,7 @@ data ServerTLSCertInfo = ServerTLSCertInfo
     x509PrivateFilePath :: FilePath
   } deriving Show
 
+-- | Server-side TLS configuration.
 data ServerTLSConfig = ServerTLSConfig
     { tlsCertData :: ServerTLSCertInfo,
       tlsServerHostName :: ServerHostName,
@@ -103,10 +105,12 @@ data ServerTLSConfig = ServerTLSConfig
 type ServerHostName = HostName
 type ServerServiceName = BS.ByteString
 
+-- | Specify whether server should listen for unencrypted connections or TLS-encrypted connections (preferred).
 data ServerConnectionConfig = UnencryptedConnectionConfig |
                               EncryptedConnectionConfig ServerTLSConfig ClientAuth
                             deriving Show
 
+-- | Specify whether the server should require a client-provided certificate for login (preferred) or whether anonymous clients should be granted access, too.
 data ClientAuth = ClientAuthRequired | AcceptAnonymousClient
   deriving (Eq, Show)
 
