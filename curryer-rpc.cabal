@@ -75,6 +75,7 @@ Test-Suite test
                , directory
                , process
                , filepath
+               , tls
   other-modules: Curryer.Test.Basic, Curryer.Test.TLS
 
 Benchmark perf

@@ -1,4 +1,4 @@
-{-# LANGUAGE DerivingStrategies, DerivingVia, DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies, DerivingVia, DeriveGeneric, ScopedTypeVariables #-}
 module Curryer.Test.TLS where
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -11,6 +11,8 @@ import Control.Monad
 import System.Directory
 import System.Process
 import System.FilePath
+import Control.Exception
+import Network.TLS (TLSException)
 
 import Network.RPC.Curryer.Server as S
 import Network.RPC.Curryer.Client as C
@@ -61,8 +63,8 @@ testTree :: TestTree
 testTree = withResource setupOpenSSL cleanupOpenSSL $ \_certdir ->
   testGroup "tls" [
   testCase "simple request and response" testSimpleCall,
-  testCase "mutual TLS" testMutualTLS--,
---  testCase "test rejected anonymous client" testRejectedAnonymousClient
+  testCase "mutual TLS" testMutualTLS,
+  testCase "test rejected anonymous client" testRejectedAnonymousClient
   ]
 
 setupOpenSSL :: IO FilePath
@@ -214,4 +216,18 @@ testMutualTLS = do
   assertEqual "get role name" (Right (Just "testou" :: Maybe String)) x
   close conn
   cancel server
-  
+
+-- setup server expecting client certificate but the client does not provide one  
+testRejectedAnonymousClient :: Assertion
+testRejectedAnonymousClient = do
+  readyVar <- newEmptyMVar
+  let emptyServerState = ()
+  server <- async (serveIPv4 (testServerRequestHandlers Nothing) emptyServerState mTLSServerConnectionConfig localHostAddr 0 (Just readyVar))
+  --wait for server to be ready
+  (SockAddrInet port _) <- takeMVar readyVar
+  res <- try $ do
+    connectIPv4 [] clientConnectionConfig localHostAddr port
+  case res of
+    Left (_exc :: TLSException) -> pure () --expected failure
+    Right _ -> assertFailure "expected connection failure"
+  cancel server

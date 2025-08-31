@@ -36,7 +36,7 @@ clientHandshake socket (serverHostName, serverService) mCred mCertStore = do
                             }
       params = (defaultParamsClient serverHostName serverService)
                {
-                 clientDebug = defaultDebugParams { debugError = \x -> putStrLn ("client debug: " <> x) },
+--                 clientDebug = defaultDebugParams { debugError = \x -> putStrLn ("client debug: " <> x) },
                  clientShared = defaultShared { sharedCAStore = fromMaybe mempty mCertStore 
                                               },
                  clientHooks = defaultClientHooks {
@@ -68,7 +68,7 @@ serverHandshake socket creds requireClientAuth mCertStore = do
             { sharedCredentials = creds,
               sharedCAStore = certStore
             }
-        , serverDebug = defaultDebugParams { debugError = \x -> putStrLn ("server: " <> x) }
+--        , serverDebug = defaultDebugParams { debugError = \x -> putStrLn ("server: " <> x) }
         , serverHooks = defaultServerHooks {
             onClientCertificate = \certChain -> do
                 --extract role from client certificate and save it
