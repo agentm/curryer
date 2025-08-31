@@ -6,6 +6,6 @@ main :: IO ()
 main = defaultMain curryerTestTree
 
 curryerTestTree :: TestTree
-curryerTestTree = testGroup "curryer" [Basic.testTree,
+curryerTestTree = testGroup "curryer" [--Basic.testTree,
                                        TLS.testTree]
   

@@ -8,8 +8,9 @@ import Control.Concurrent.MVar
 import Network.Socket (SockAddr(..))
 import Control.Concurrent.Async
 import Control.Monad
---import Control.Concurrent
---import Control.Concurrent.STM
+import System.Directory
+import System.Process
+import System.FilePath
 
 import Network.RPC.Curryer.Server as S
 import Network.RPC.Curryer.Client as C
@@ -57,13 +58,68 @@ openssl s_client -connect 127.0.0.1:3000 -key client_certs/client.key.pem -cert 
 -}
 
 testTree :: TestTree
-testTree = testGroup "tls" [
+testTree = withResource setupOpenSSL cleanupOpenSSL $ \_certdir ->
+  testGroup "tls" [
   testCase "simple request and response" testSimpleCall,
   testCase "mutual TLS" testMutualTLS--,
 --  testCase "test rejected anonymous client" testRejectedAnonymousClient
   ]
 
--- TODO test should create its own self-signed CA, keys, and certs
+setupOpenSSL :: IO FilePath
+setupOpenSSL = do
+  let top = "test/Curryer/Test/pems"
+  topExists <- doesPathExist top
+  when topExists (removeDirectoryRecursive top)
+  createDirectory top
+  forM_ ["client", "server", "ca", "ca/private", "ca/newcerts", "ca/certs"] $ \d ->
+    createDirectoryIfMissing True (top </> d)
+  writeFile (top </> "ca/serial") "01"
+  writeFile (top </> "ca/index.txt") ""
+  --openssl.cnf is in the repo already
+  -- CA
+  -- generate the private key for the self-signed certificate authority
+  let serverSubject = "/C=US/ST=DC/O=testo/CN=localhost"
+      clientSubject = "/C=US/ST=DC/O=testo/OU=testou/CN=localclient"
+      sslconfig = "test/Curryer/Test/openssl.cnf"
+  callProcess "openssl" ["genrsa", "-out", top </> "ca/private/cakey.pem", "4096"]
+  callProcess "openssl" ["req", "-new", "-x509", "-nodes", "-days", "3650",
+                         "-config", sslconfig,
+                         "-key", top </> "ca/private/cakey.pem",
+                         "-out", top </> "ca/certs/cacert.pem",
+                         "-subj", serverSubject]
+  -- SERVER
+  -- generate the server's private key
+  callProcess "openssl" ["genrsa", "-out", top </> "server/server.key.pem", "4096"]
+  -- generate CSR
+  callProcess "openssl" ["req", "-new",
+                         "-key", top </> "server/server.key.pem",
+                         "-out", top </> "server/server.csr",
+                         "-subj", serverSubject]
+  -- generate server certificate
+  callProcess "openssl" ["ca",
+                         "-config", sslconfig,
+                         "-days", "1650",
+                         "-notext", "-batch", "-in", top </> "server/server.csr",
+                         "-out", top </> "server/server.cert.pem"]
+
+  -- CLIENT
+  -- generate private key
+  callProcess "openssl" ["genrsa", "-out", top </> "client/client.key.pem", "4096"]
+  -- generate client CSR
+  callProcess "openssl" ["req", "-new",
+                         "-key", top </> "client/client.key.pem",
+                         "-out", top </> "ca/client.csr", "-nodes", "-subj", clientSubject]
+  -- generate client certificate
+  callProcess "openssl" ["ca", "-config", sslconfig,
+                         "-days", "1650",
+                         "-notext", "-batch",
+                         "-in", top </> "ca/client.csr",
+                         "-out", top </> "client/client.cert.pem"]
+  pure top
+
+cleanupOpenSSL :: FilePath -> IO ()
+cleanupOpenSSL certdir = 
+  removeDirectoryRecursive certdir
 
 data AddTwoNumbersReq = AddTwoNumbersReq Int Int
   deriving (Generic, Show)
@@ -89,9 +145,9 @@ serverConnectionConfig = S.EncryptedConnectionConfig
                             S.tlsServerServiceName = mempty}) AcceptAnonymousClient
   where
     certData = ServerTLSCertInfo {
-      x509PublicFilePath = "./test/Curryer/Test/server/server.cert.pem",
-      S.x509CertFilePath = "./test/Curryer/Test/ca/certs/cacert.pem",
-      x509PrivateFilePath = "./test/Curryer/Test/server/server.key.pem"
+      x509PublicFilePath = "./test/Curryer/Test/pems/server/server.cert.pem",
+      S.x509CertFilePath = "./test/Curryer/Test/pems/ca/certs/cacert.pem",
+      x509PrivateFilePath = "./test/Curryer/Test/pems/server/server.key.pem"
       }
 
 mTLSServerConnectionConfig :: ServerConnectionConfig
@@ -102,9 +158,9 @@ mTLSServerConnectionConfig = S.EncryptedConnectionConfig
                             S.tlsServerServiceName = mempty}) ClientAuthRequired
   where
     certData = ServerTLSCertInfo {
-      x509PublicFilePath = "./test/Curryer/Test/server/server.cert.pem",
-      S.x509CertFilePath = "./test/Curryer/Test/ca/certs/cacert.pem",
-      x509PrivateFilePath = "./test/Curryer/Test/server/server.key.pem"
+      x509PublicFilePath = "./test/Curryer/Test/pems/server/server.cert.pem",
+      S.x509CertFilePath = "./test/Curryer/Test/pems/ca/certs/cacert.pem",
+      x509PrivateFilePath = "./test/Curryer/Test/pems/server/server.key.pem"
       }
 
 mTLSClientConnectionConfig :: ClientConnectionConfig
@@ -114,9 +170,9 @@ mTLSClientConnectionConfig = C.EncryptedConnectionConfig
                                      C.tlsServerServiceName = mempty})
   where
     certData = ClientTLSCertInfo {
-      x509PublicPrivateFilePaths = Just ("./test/Curryer/Test/client/client.cert.pem",
-                                    "./test/Curryer/Test/client/client.key.pem"),
-      C.x509CertFilePath = Just "./test/Curryer/Test/ca/certs/cacert.pem"
+      x509PublicPrivateFilePaths = Just ("./test/Curryer/Test/pems/client/client.cert.pem",
+                                    "./test/Curryer/Test/pems/client/client.key.pem"),
+      C.x509CertFilePath = Just "./test/Curryer/Test/pems/ca/certs/cacert.pem"
       }
 
 clientConnectionConfig :: ClientConnectionConfig
@@ -127,7 +183,7 @@ clientConnectionConfig = C.EncryptedConnectionConfig
   where
     certData = ClientTLSCertInfo {
       x509PublicPrivateFilePaths = Nothing,
-      C.x509CertFilePath = Just "./test/Curryer/Test/ca/certs/cacert.pem"
+      C.x509CertFilePath = Just "./test/Curryer/Test/pems/ca/certs/cacert.pem"
       }
 
 -- test an anonymous client connecting to a self-signed cert server

@@ -72,6 +72,9 @@ Test-Suite test
                , streamly-core >= 0.1.0
                , bytestring
                , streamly-bytestring >= 0.2.1
+               , directory
+               , process
+               , filepath
   other-modules: Curryer.Test.Basic, Curryer.Test.TLS
 
 Benchmark perf
