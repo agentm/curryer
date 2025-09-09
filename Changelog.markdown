@@ -1,3 +1,8 @@
+# v0.5.0 (2025-08-31)
+
+* add encryption support via TLS
+* add optional authentication support via mutual TLS
+
 # v0.4.0 (2025-03-29)
 
 * add ability to serve and connect to IPv6 and Unix domain sockets (#5)

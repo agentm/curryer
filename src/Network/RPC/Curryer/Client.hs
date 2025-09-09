@@ -16,6 +16,7 @@ import System.Timeout
 import Control.Monad
 import Network.TLS
 import Data.X509.CertificateStore
+import System.X509
 
 type SyncMap = STMMap.Map UUID (MVar (Either ConnectionError BinaryMessage), UTCTime)
 
@@ -39,7 +40,7 @@ data ClientConnectionConfig =
 
 -- | Client-side encryption TLS configuration.
 data ClientTLSConfig = ClientTLSConfig 
-    { tlsCertData :: ClientTLSCertInfo,
+    { tlsCertInfo :: ClientTLSCertInfo,
       tlsServerHostName :: ServerHostName,
       tlsServerServiceName :: ServerServiceName
     } deriving Show
@@ -48,7 +49,7 @@ data ClientTLSConfig = ClientTLSConfig
 data ClientTLSCertInfo = ClientTLSCertInfo
   {
     x509PublicPrivateFilePaths :: Maybe (FilePath, FilePath),
-    x509CertFilePath :: Maybe FilePath
+    x509CertFilePath :: Maybe FilePath -- ^ if Nothing, use system's certificate store
   } deriving Show
 
                         
@@ -230,7 +231,7 @@ setupClientSocket config sock = do
       let serverHostTuple = (tlsServerHostName tlsConfig,
                              tlsServerServiceName tlsConfig)      
       mCred <- do
-            let mKeyPaths = x509PublicPrivateFilePaths (tlsCertData tlsConfig)
+            let mKeyPaths = x509PublicPrivateFilePaths (tlsCertInfo tlsConfig)
             case mKeyPaths of
               Nothing -> pure Nothing
               Just (pubKeyPath, privKeyPath) -> do
@@ -239,8 +240,8 @@ setupClientSocket config sock = do
                   Left err -> error err
                   Right cred ->
                     pure (Just cred)
-      mCAStore <- case x509CertFilePath (tlsCertData tlsConfig) of
-                    Nothing -> pure Nothing
+      mCAStore <- case x509CertFilePath (tlsCertInfo tlsConfig) of
+                    Nothing -> Just <$> getSystemCertificateStore
                     Just certPath -> do
                      mCAStore <- readCertificateStore certPath 
                      case mCAStore of

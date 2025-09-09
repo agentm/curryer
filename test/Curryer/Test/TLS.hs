@@ -148,7 +148,7 @@ serverConnectionConfig = S.EncryptedConnectionConfig
   where
     certData = ServerTLSCertInfo {
       x509PublicFilePath = "./test/Curryer/Test/pems/server/server.cert.pem",
-      S.x509CertFilePath = "./test/Curryer/Test/pems/ca/certs/cacert.pem",
+      S.x509CertFilePath = Just "./test/Curryer/Test/pems/ca/certs/cacert.pem",
       x509PrivateFilePath = "./test/Curryer/Test/pems/server/server.key.pem"
       }
 
@@ -161,13 +161,13 @@ mTLSServerConnectionConfig = S.EncryptedConnectionConfig
   where
     certData = ServerTLSCertInfo {
       x509PublicFilePath = "./test/Curryer/Test/pems/server/server.cert.pem",
-      S.x509CertFilePath = "./test/Curryer/Test/pems/ca/certs/cacert.pem",
+      S.x509CertFilePath = Just "./test/Curryer/Test/pems/ca/certs/cacert.pem",
       x509PrivateFilePath = "./test/Curryer/Test/pems/server/server.key.pem"
       }
 
 mTLSClientConnectionConfig :: ClientConnectionConfig
 mTLSClientConnectionConfig = C.EncryptedConnectionConfig
-                         (ClientTLSConfig {C.tlsCertData = certData,
+                         (ClientTLSConfig {C.tlsCertInfo = certData,
                                      C.tlsServerHostName = "localhost",
                                      C.tlsServerServiceName = mempty})
   where
@@ -179,7 +179,7 @@ mTLSClientConnectionConfig = C.EncryptedConnectionConfig
 
 clientConnectionConfig :: ClientConnectionConfig
 clientConnectionConfig = C.EncryptedConnectionConfig
-                         (ClientTLSConfig {C.tlsCertData = certData,
+                         (ClientTLSConfig {C.tlsCertInfo = certData,
                                      C.tlsServerHostName = "localhost",
                                      C.tlsServerServiceName = mempty})
   where

@@ -19,7 +19,7 @@ data GetKey = GetKey String
 main :: IO ()
 main = do
   kvmap <- M.newIO
-  void $ serveIPv4 kvRequestHandlers kvmap localHostAddr 8765 Nothing
+  void $ serveIPv4 kvRequestHandlers kvmap UnencryptedConnectionConfig localHostAddr 8765 Nothing
 
 -- setup incoming request handlers to operate on the server's state
 kvRequestHandlers :: RequestHandlers (M.Map String String)

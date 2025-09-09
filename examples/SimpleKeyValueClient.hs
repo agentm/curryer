@@ -23,7 +23,7 @@ main :: IO ()
 main = do
   opts <- getRecord "SimpleKeyValueClient"
   -- connect to the remote server (in this case on the localhost address)
-  conn <- connectIPv4 [] localHostAddr 8765
+  conn <- connectIPv4 [] UnencryptedConnectionConfig localHostAddr 8765
   case opts of
     Get k -> do
       --call the remote function and validate the result

@@ -1,5 +1,5 @@
 Name: curryer-rpc
-Version: 0.4.0
+Version: 0.5.0
 License: PublicDomain
 Build-Type: Simple
 Homepage: https://github.com/agentm/curryer
@@ -43,6 +43,7 @@ Library
                      , data-default
                      , streaming-commons
                      , crypton-x509-store
+                     , crypton-x509-system
                      , crypton-x509
                      , asn1-types
         Hs-Source-Dirs: ./src

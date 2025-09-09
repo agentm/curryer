@@ -43,6 +43,7 @@ import System.Timeout
 import qualified Network.ByteOrder as BO
 import qualified Network.TLS as TLS
 import Data.X509.CertificateStore
+import System.X509
 
 #define CURRYER_SHOW_BYTES 0
 #define CURRYER_PASS_SCHEMA 0
@@ -91,7 +92,7 @@ lockless (Locking _ a) = a
 data ServerTLSCertInfo = ServerTLSCertInfo
   {
     x509PublicFilePath :: FilePath,
-    x509CertFilePath :: FilePath,
+    x509CertFilePath :: Maybe FilePath, -- ^ if Nothing, use the system's certificate store
     x509PrivateFilePath :: FilePath
   } deriving Show
 
@@ -163,6 +164,13 @@ data ConnectionState a = ConnectionState {
 
 data SocketContext = UnencryptedSocketContext (Locking Socket) |
                      EncryptedSocketContext (Locking Socket) TLS.Context
+
+instance Eq SocketContext where
+  UnencryptedSocketContext lockSockA == UnencryptedSocketContext lockSockB =
+    lockless lockSockA == lockless lockSockB
+  EncryptedSocketContext lockSockA _ == EncryptedSocketContext lockSockB _ =
+    lockless lockSockA == lockless lockSockB
+  _ == _ = False
 
 lockingSocket :: SocketContext -> Locking Socket
 lockingSocket (UnencryptedSocketContext ls) = ls
@@ -368,14 +376,17 @@ setupServerSocket config sock = do
   case config of
     UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock, Nothing)
     EncryptedConnectionConfig tlsConfig clientAuth -> do
-      let certPath = x509CertFilePath (tlsCertData tlsConfig)
+      let mCertPath = x509CertFilePath (tlsCertData tlsConfig)
       creds <- STLS.readCreds (x509PublicFilePath (tlsCertData tlsConfig)) (x509PrivateFilePath (tlsCertData tlsConfig))
-      mCAStore <- readCertificateStore certPath
-      case mCAStore of
-        Nothing -> error ("failed to load certificate store at " <> certPath)
-        Just caStore -> do
-          (tlsCtx, mRoleName) <- STLS.serverHandshake sock creds (clientAuth /= AcceptAnonymousClient) (Just caStore)
-          pure (EncryptedSocketContext sockLock tlsCtx, mRoleName)
+      caStore <- case mCertPath of
+                   Just certPath -> do
+                     mCAStore <- readCertificateStore certPath
+                     case mCAStore of
+                       Nothing -> error ("failed to load certificate store at " <> certPath)
+                       Just caStore -> pure caStore      
+                   Nothing -> getSystemCertificateStore
+      (tlsCtx, mRoleName) <- STLS.serverHandshake sock creds (clientAuth /= AcceptAnonymousClient) (Just caStore)
+      pure (EncryptedSocketContext sockLock tlsCtx, mRoleName)
 
 openEnvelope :: forall s. (Serialise s, Typeable s) => Envelope -> Maybe s
 openEnvelope (Envelope eprint _ _ bytes) =

@@ -24,7 +24,7 @@ import Data.X509.CertificateStore
 import Data.X509
 import Data.ASN1.Types.String
 import Control.Concurrent.MVar
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Data.Maybe
 
 clientHandshake :: Socket -> (HostName, ByteString) -> Maybe Credential -> Maybe CertificateStore -> IO TLS.Context
@@ -39,6 +39,7 @@ clientHandshake socket (serverHostName, serverService) mCred mCertStore = do
 --                 clientDebug = defaultDebugParams { debugError = \x -> putStrLn ("client debug: " <> x) },
                  clientShared = defaultShared { sharedCAStore = fromMaybe mempty mCertStore 
                                               },
+                 clientSupported = defaultSupported { supportedVersions = [TLS13] },
                  clientHooks = defaultClientHooks {
                    onCertificateRequest = \_ -> pure mCred
                    }
@@ -62,18 +63,22 @@ serverHandshake socket creds requireClientAuth mCertStore = do
       params = defaultParamsServer
         { serverWantClientCert = requireClientAuth
         , serverSupported = def
-            { supportedCiphers = TLSExtra.ciphersuite_default
+            { supportedCiphers = TLSExtra.ciphersuite_default,
+              supportedVersions = [TLS13]
             }
         , serverShared = def
             { sharedCredentials = creds,
               sharedCAStore = certStore
             }
---        , serverDebug = defaultDebugParams { debugError = \x -> putStrLn ("server: " <> x) }
+        , serverDebug = defaultDebugParams { debugError = \x -> putStrLn ("server: " <> x) }
         , serverHooks = defaultServerHooks {
             onClientCertificate = \certChain -> do
                 --extract role from client certificate and save it
-                void $ swapMVar roleName (extractRoleFromCertChain certChain)
-                validateClientCertificate certStore validationCache certChain }
+                valRes <- validateClientCertificate certStore validationCache certChain
+                when (valRes == CertificateUsageAccept) $
+                    void $ swapMVar roleName (extractRoleFromCertChain certChain)
+                pure valRes
+            }
         }
   ctx <- TLS.contextNew backend params
   TLS.handshake ctx
