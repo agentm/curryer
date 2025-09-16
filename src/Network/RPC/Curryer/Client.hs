@@ -51,7 +51,6 @@ data ClientTLSCertInfo = ClientTLSCertInfo
     x509PublicPrivateFilePaths :: Maybe (FilePath, FilePath),
     x509CertFilePath :: Maybe FilePath -- ^ if Nothing, use system's certificate store
   } deriving Show
-
                         
 -- | Connect to a remote server over IPv4. Wraps `connect`.
 connectIPv4 ::
@@ -251,4 +250,13 @@ setupClientSocket config sock = do
       tlsCtx <- STLS.clientHandshake sock serverHostTuple mCred mCAStore
       pure (EncryptedSocketContext sockLock tlsCtx)
 
-  
+defaultClientConnectionConfig :: ClientConnectionConfig
+defaultClientConnectionConfig =
+  EncryptedConnectionConfig (ClientTLSConfig {
+                                tlsCertInfo = ClientTLSCertInfo {
+                                    x509PublicPrivateFilePaths = Nothing,
+                                    x509CertFilePath = Nothing
+                                    },
+                                tlsServerHostName = "localhost",
+                                tlsServerServiceName = mempty
+                                             })

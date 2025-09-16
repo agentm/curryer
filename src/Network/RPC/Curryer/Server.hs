@@ -16,7 +16,7 @@ import GHC.Generics
 import GHC.Fingerprint
 import Data.Typeable
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import Control.Exception
+import Control.Exception as Exc
 import Data.Function ((&))
 import Data.Word
 import qualified Data.ByteString as BS
@@ -35,6 +35,7 @@ import qualified Data.UUID.V4 as UUIDBase
 import Control.Monad
 import Data.Functor
 import Control.Applicative
+import System.IO (hPutStr, stderr)
 
 import qualified Network.RPC.Curryer.StreamlyAdditions as SA
 import qualified Network.RPC.Curryer.StreamlyTLS as STLS
@@ -92,13 +93,13 @@ lockless (Locking _ a) = a
 data ServerTLSCertInfo = ServerTLSCertInfo
   {
     x509PublicFilePath :: FilePath,
-    x509CertFilePath :: Maybe FilePath, -- ^ if Nothing, use the system's certificate store
-    x509PrivateFilePath :: FilePath
+    x509PrivateFilePath :: FilePath,
+    x509CertFilePath :: Maybe FilePath -- ^ if Nothing, use the system's certificate store
   } deriving Show
 
 -- | Server-side TLS configuration.
 data ServerTLSConfig = ServerTLSConfig
-    { tlsCertData :: ServerTLSCertInfo,
+    { tlsCertInfo :: ServerTLSCertInfo,
       tlsServerHostName :: ServerHostName,
       tlsServerServiceName :: ServerServiceName
     } deriving Show
@@ -155,9 +156,12 @@ data RequestHandler serverState where
   -- | create an asynchronous request handler where the client does not expect nor await a response
   AsyncRequestHandler :: forall a serverState. Serialise a => (ConnectionState serverState -> a -> IO ()) -> RequestHandler serverState
 
+type ClientConnectionId = UUIDBase.UUID
+
 -- | Server state sent in via `serve` and passed to `RequestHandler`s.
 data ConnectionState a = ConnectionState {
   connectionServerState :: a,
+  connectionClientId :: ClientConnectionId, -- ^ uniquely identifies the client in callbacks
   connectionSocketContext :: SocketContext,
   connectionRoleName :: Maybe STLS.RoleName -- ^ if a client certificate is provided during the TLS handshake, the connection role is the organization unit, if available
   }
@@ -361,9 +365,13 @@ serve ::
          Maybe (MVar SockAddr) ->
          IO Bool
 serve userMsgHandlers serverState config sockSpec sockAddr mSockLock = do
-  let handleSock sock = do
+  let handleSock sock = Exc.handle (excHandler sock) $ do
         (sockCtx, mRoleName) <- setupServerSocket config sock
-        drainSocketMessages sockCtx (serverEnvelopeHandler sockCtx mRoleName userMsgHandlers serverState)
+        clientId <- UUIDBase.nextRandom
+        drainSocketMessages sockCtx (serverEnvelopeHandler sockCtx clientId mRoleName userMsgHandlers serverState)
+      excHandler sock (exc :: TLS.TLSException) = do
+        hPutStr stderr (show exc)
+        Socket.close sock
   Stream.unfold (SA.acceptorOnSockSpec sockSpec mSockLock) sockAddr
    & Stream.parMapM id handleSock
    & Stream.fold FL.drain
@@ -376,8 +384,8 @@ setupServerSocket config sock = do
   case config of
     UnencryptedConnectionConfig{} -> pure (UnencryptedSocketContext sockLock, Nothing)
     EncryptedConnectionConfig tlsConfig clientAuth -> do
-      let mCertPath = x509CertFilePath (tlsCertData tlsConfig)
-      creds <- STLS.readCreds (x509PublicFilePath (tlsCertData tlsConfig)) (x509PrivateFilePath (tlsCertData tlsConfig))
+      let mCertPath = x509CertFilePath (tlsCertInfo tlsConfig)
+      creds <- STLS.readCreds (x509PublicFilePath (tlsCertInfo tlsConfig)) (x509PrivateFilePath (tlsCertInfo tlsConfig))
       caStore <- case mCertPath of
                    Just certPath -> do
                      mCAStore <- readCertificateStore certPath
@@ -415,15 +423,16 @@ matchEnvelope envelope dispatchf =
 
 -- | Called by `serve` to process incoming envelope requests. Never returns, so use `async` to spin it off on another thread.
 serverEnvelopeHandler :: SocketContext
+                     -> ClientConnectionId
                      -> Maybe STLS.RoleName
                      -> RequestHandlers s
                      -> s         
                      -> Envelope
                      -> IO ()
-serverEnvelopeHandler _ _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
-serverEnvelopeHandler _ _ _ _ (Envelope _ ExceptionResponseMessage _ _) = pure ()
-serverEnvelopeHandler _ _ _ _ (Envelope _ ResponseMessage _ _) = pure ()
-serverEnvelopeHandler sockCtx mRoleName msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
+serverEnvelopeHandler _ _ _ _ _ (Envelope _ TimeoutResponseMessage _ _) = pure ()
+serverEnvelopeHandler _ _ _ _ _ (Envelope _ ExceptionResponseMessage _ _) = pure ()
+serverEnvelopeHandler _ _ _ _ _ (Envelope _ ResponseMessage _ _) = pure ()
+serverEnvelopeHandler sockCtx clientId mRoleName msgHandlers serverState envelope@(Envelope _ (RequestMessage timeoutms) msgId _) = do
   --find first matching handler
   let runTimeout :: IO b -> IO (Maybe b)
       runTimeout m = 
@@ -437,6 +446,7 @@ serverEnvelopeHandler sockCtx mRoleName msgHandlers serverState envelope@(Envelo
       
       sState = ConnectionState {
         connectionServerState = serverState,
+        connectionClientId = clientId,
         connectionSocketContext = sockCtx,
         connectionRoleName = mRoleName
         }

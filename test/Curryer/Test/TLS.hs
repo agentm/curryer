@@ -142,11 +142,11 @@ testServerRequestHandlers _mAsyncMVar =
 serverConnectionConfig :: ServerConnectionConfig
 serverConnectionConfig = S.EncryptedConnectionConfig
                          (ServerTLSConfig
-                           {S.tlsCertData = certData,
+                           {S.tlsCertInfo = certInfo,
                             S.tlsServerHostName = "localhost",
                             S.tlsServerServiceName = mempty}) AcceptAnonymousClient
   where
-    certData = ServerTLSCertInfo {
+    certInfo = ServerTLSCertInfo {
       x509PublicFilePath = "./test/Curryer/Test/pems/server/server.cert.pem",
       S.x509CertFilePath = Just "./test/Curryer/Test/pems/ca/certs/cacert.pem",
       x509PrivateFilePath = "./test/Curryer/Test/pems/server/server.key.pem"
@@ -155,11 +155,11 @@ serverConnectionConfig = S.EncryptedConnectionConfig
 mTLSServerConnectionConfig :: ServerConnectionConfig
 mTLSServerConnectionConfig = S.EncryptedConnectionConfig
                          (ServerTLSConfig
-                           {S.tlsCertData = certData,
+                           {S.tlsCertInfo = certInfo,
                             S.tlsServerHostName = "localhost",
                             S.tlsServerServiceName = mempty}) ClientAuthRequired
   where
-    certData = ServerTLSCertInfo {
+    certInfo = ServerTLSCertInfo {
       x509PublicFilePath = "./test/Curryer/Test/pems/server/server.cert.pem",
       S.x509CertFilePath = Just "./test/Curryer/Test/pems/ca/certs/cacert.pem",
       x509PrivateFilePath = "./test/Curryer/Test/pems/server/server.key.pem"

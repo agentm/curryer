@@ -70,7 +70,7 @@ serverHandshake socket creds requireClientAuth mCertStore = do
             { sharedCredentials = creds,
               sharedCAStore = certStore
             }
-        , serverDebug = defaultDebugParams { debugError = \x -> putStrLn ("server: " <> x) }
+--        , serverDebug = defaultDebugParams { debugError = \x -> putStrLn ("server: " <> x) }
         , serverHooks = defaultServerHooks {
             onClientCertificate = \certChain -> do
                 --extract role from client certificate and save it
