@@ -10,6 +10,7 @@ Curryer is inspired by the now unmaintained [distributed-process](https://hackag
 * asynchronous server-to-client callbacks (for server-initiated notifications)
 * timeouts
 * leverages [winery](https://hackage.haskell.org/package/winery) for high-performance serialization
+* TLS including mutual TLS (mTLS) authentication
 
 ## Requirements
 
