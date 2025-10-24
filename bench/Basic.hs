@@ -1,6 +1,6 @@
 {-# LANGUAGE DerivingStrategies, DeriveGeneric, DerivingVia #-}
-import Network.RPC.Curryer.Server
-import Network.RPC.Curryer.Client
+import Network.RPC.Curryer.Server as S
+import Network.RPC.Curryer.Client as C
 import Criterion.Main
 import GHC.Generics
 import Control.Concurrent.MVar
@@ -15,10 +15,10 @@ main :: IO ()
 main = do
   --start server shared across benchmarks- gather stats on round-trip requests-responses
   portReadyMVar <- newEmptyMVar
-  server <- async (serveIPv4 benchmarkServerRequestHandlers () localHostAddr 0 (Just portReadyMVar))
+  server <- async (serveIPv4 benchmarkServerRequestHandlers () S.UnencryptedConnectionConfig localHostAddr 0 (Just portReadyMVar))
   --wait for server to be ready
   (SockAddrInet port _) <- takeMVar portReadyMVar
-  clientConn <- connectIPv4 [] localHostAddr port
+  clientConn <- connectIPv4 [] C.UnencryptedConnectionConfig localHostAddr port
 
   _ <- syncWaitRequest clientConn 100
   let syncWait ms = nfIO (syncWaitRequest clientConn ms)
