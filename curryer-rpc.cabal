@@ -46,6 +46,7 @@ Library
                      , crypton-x509-system
                      , crypton-x509
                      , asn1-types
+                     , unix >= 2.8.0.0
         Hs-Source-Dirs: ./src
         Default-Language: Haskell2010
         ghc-options: -Wall -fwarn-unused-binds -fwarn-unused-imports
