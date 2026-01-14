@@ -1,3 +1,7 @@
+# v0.5.1 (2026-01-14)
+
+* switch to crypton-asn1-types and upgrade crypton modules to fix compilation error
+
 # v0.5.0 (2025-08-31)
 
 * add encryption support via TLS

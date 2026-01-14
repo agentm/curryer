@@ -1,5 +1,5 @@
 Name: curryer-rpc
-Version: 0.5.0
+Version: 0.5.1
 License: PublicDomain
 Build-Type: Simple
 Homepage: https://github.com/agentm/curryer
@@ -39,13 +39,13 @@ Library
                      , time
                      , network-byte-order
                      , stm
-                     , tls >= 2.1.11
+                     , tls >= 2.1.12
                      , data-default
                      , streaming-commons
-                     , crypton-x509-store
-                     , crypton-x509-system
-                     , crypton-x509
-                     , asn1-types
+                     , crypton-x509-store >= 1.6.11
+                     , crypton-x509-system >= 1.6.7
+                     , crypton-x509 >= 1.7.7
+                     , crypton-asn1-types >= 0.4.1
                      , unix >= 2.8.0.0
         Hs-Source-Dirs: ./src
         Default-Language: Haskell2010
