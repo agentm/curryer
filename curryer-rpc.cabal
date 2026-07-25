@@ -22,10 +22,10 @@ Library
         Build-Depends: base >= 4.12 && <= 4.21
                      , winery
                      , bytestring
-                     , streamly == 0.10.1
-                     , streamly-core >= 0.2.2
+                     , streamly == 0.11.1
+                     , streamly-core >= 0.3.1
 -- includes critical fix for pinned arrays
-                     , streamly-bytestring >= 0.2.2
+                     , streamly-bytestring >= 0.2.3
                      , network
                      , exceptions
                      , async
@@ -42,9 +42,9 @@ Library
                      , tls >= 2.1.12
                      , data-default
                      , streaming-commons
-                     , crypton-x509-store >= 1.6.11
-                     , crypton-x509-system >= 1.6.7
-                     , crypton-x509 >= 1.7.7
+                     , crypton-x509-store >= 1.8.0
+                     , crypton-x509-system >= 1.8.0
+                     , crypton-x509 >= 1.8.0
                      , crypton-asn1-types >= 0.4.1
                      , unix >= 2.8.0.0
         Hs-Source-Dirs: ./src
@@ -71,9 +71,9 @@ Test-Suite test
                , network
                , async
                , stm
-               , streamly-core >= 0.1.0
+               , streamly-core
                , bytestring
-               , streamly-bytestring >= 0.2.1
+               , streamly-bytestring
                , directory
                , process
                , filepath

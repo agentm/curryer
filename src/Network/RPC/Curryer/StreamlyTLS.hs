@@ -6,7 +6,6 @@ import Network.Socket hiding (socket)
 --import Control.Monad.IO.Class
 --import Streamly.Network.Socket (SockSpec)
 --import Control.Concurrent (MVar, putMVar)
-import qualified Streamly.Data.Array as A
 import Streamly.Internal.Data.Unfold (Unfold(..))
 import Streamly.External.ByteString (toArray)
 import Streamly.Data.Array (Array)
@@ -127,10 +126,7 @@ safeRecv s buf = do
     takeMVar var
 #endif
 
-
-tlsReader :: TLS.Context -> UF.Unfold IO Socket Word8
-tlsReader ctx = UF.many A.reader (chunkTLSReader ctx)
-  
+            
 -- | Read from TLS socket as soon as it is created.
 chunkTLSReader :: TLS.Context -> UF.Unfold IO Socket (Array Word8)
 chunkTLSReader ctx = Unfold step inject

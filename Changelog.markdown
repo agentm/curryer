@@ -1,3 +1,7 @@
+# v0.5.2 (2026-08-24)
+
+* upgrade to streamly 0.11
+	
 # v0.5.1 (2026-01-14)
 
 * switch to crypton-asn1-types and upgrade crypton modules to fix compilation error

@@ -4,12 +4,17 @@
 module Network.RPC.Curryer.Server where
 import qualified Streamly.Data.Stream.Prelude as SP
 import Streamly.Data.Stream as Stream hiding (foldr)
-import Streamly.Internal.Data.Array (pinnedCreateOf)
-
 import Streamly.Network.Socket as SSock
+import Streamly.Data.Parser as P
+import qualified Streamly.Data.Stream.Prelude as P
+import qualified Streamly.External.ByteString as StreamlyBS
+import Streamly.Data.Stream.Prelude as Stream hiding (foldr)
+import Streamly.Internal.Data.Binary.Parser (word32be)
+import qualified Streamly.Data.Array as A
+import Streamly.Data.Fold as FL hiding (foldr)
+
 import Network.Socket as Socket
 import Network.Socket.ByteString as Socket
-import Streamly.Data.Parser as P
 import Codec.Winery
 import Codec.Winery.Internal (varInt, decodeVarInt, getBytes)
 import GHC.Generics
@@ -22,13 +27,6 @@ import Data.Word
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.FastBuilder as BB
-import Streamly.Data.Fold as FL hiding (foldr)
---import qualified Streamly.Internal.Data.Stream.IsStream as P
-import qualified Streamly.Data.Stream.Prelude as P
-import qualified Streamly.External.ByteString as StreamlyBS
-import Streamly.Data.Stream.Prelude as Stream hiding (foldr)
-import Streamly.Internal.Data.Binary.Parser (word32be)
-import qualified Streamly.Data.Unfold as UF
 import qualified Data.Binary as B
 import qualified Data.UUID as UUIDBase
 import qualified Data.UUID.V4 as UUIDBase
@@ -249,7 +247,7 @@ envelopeP = do
         if c == 0 then
           pure mempty
           else do
-          ps <- P.takeEQ c (pinnedCreateOf c)
+          ps <- P.takeEQ c (A.createOf c)
 --          traceShowM ("envelopeP read bytes", c)
           let !bs = StreamlyBS.fromArray ps
 --          traceShowM ("unoptimized bs")
@@ -484,14 +482,17 @@ type EnvelopeHandler = Envelope -> IO ()
 
 drainSocketMessages :: SocketContext -> EnvelopeHandler -> IO ()
 drainSocketMessages sockCtx envelopeHandler = do
-      
-  let socketReader :: UF.Unfold IO Socket Word8
-      socketReader = case sockCtx of
-                       UnencryptedSocketContext{} -> SSock.reader
+
+  let byteStream :: Stream IO Word8
+      byteStream = case sockCtx of
+                       UnencryptedSocketContext{} ->
+                         SP.unfold SSock.reader sock
                        EncryptedSocketContext _lsock tlsCtx ->
-                         STLS.tlsReader tlsCtx
+                         SP.unfold (STLS.chunkTLSReader tlsCtx) sock
+                         & SP.concatMap A.read
       sock = lockless (lockingSocket sockCtx)
-  SP.unfold socketReader sock
+      
+  byteStream
    & P.parseMany envelopeP
    & SP.catRights
    & SP.parMapM (SP.ordered False) envelopeHandler 
